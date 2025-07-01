@@ -49,31 +49,41 @@ def login():
 
 @app.route('/callback')
 def callback():
-    # Получение кода авторизации из параметров запроса
-    code = request.args.get('code')
-    if code:
-        logging.info("Received authorization code.")
-        # Обмен кода на токен доступа
-        token_response = hh_api.post('oauth/token', data={
-            'client_id': client_id,
-            'client_secret': client_secret,
-            'code': code,
-            'redirect_uri': redirect_uri,
-            'grant_type': 'authorization_code'
-        })
-        access_token = token_response.get('access_token')
-        hh_api.set_token(access_token)  # Установка токена для дальнейших запросов
-        logging.info("Access token received and set.")
-        return redirect(url_for('get_vacancies'))
-    logging.error("Authorization failed: No code received.")
-    return 'Authorization failed', 400
+    try:
+        code = request.args.get('code')
+        if code:
+            logging.info("Received authorization code.")
+            # Подготовка данных для запроса
+            data = {
+                'client_id': os.getenv('CLIENT_ID'),
+                'client_secret': os.getenv('CLIENT_SECRET'),
+                'code': code,
+                'redirect_uri': os.getenv('REDIRECT_URI'),
+                'grant_type': 'authorization_code'
+            }
+            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+
+            # Отправка POST запроса на новый URL
+            token_response = hh_api.post_form('token', data=data, headers=headers)
+            logging.info("Token response: %s", token_response)
+
+            access_token = token_response.get('access_token')
+            refresh_token = token_response.get('refresh_token')
+            hh_api.set_token(access_token)  # Установка токена для дальнейших запросов
+
+            return redirect(url_for('get_vacancies'))
+        logging.error("Authorization failed: No code received.")
+        return 'Authorization failed', 400
+    except Exception as e:
+        logging.error("Error in callback: %s", str(e))
+        return 'Internal Server Error', 500
 
 
 @app.route('/vacancies', methods=['GET'])
 def get_vacancies():
     # Параметры для фильтрации вакансий
     params = {
-        'area': '34',  # ID для Волгограда
+        'area': '1',  # ID для Москва
         'text': 'Data Engineer'
     }
 
