@@ -1,9 +1,10 @@
 import logging
 from flask import Flask, request, redirect, url_for, session, jsonify
-import mysql.connector
+import json
 from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
 import os
 from dotenv import load_dotenv
+from database import init_db
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -78,30 +79,49 @@ def callback():
         logging.error("Error in callback: %s", str(e))
         return 'Internal Server Error', 500
 
-
 @app.route('/vacancies', methods=['GET'])
 def get_vacancies():
     # Параметры для фильтрации вакансий
     params = {
-        'area': '1',  # ID для Москва
-        'text': 'Data Engineer'
+        'text': 'Data Engineer',
+        'per_page': 20,  # Количество вакансий на странице
+        'page': 0  # Начальная страница
     }
-
+    all_vacancies = []  # Список для хранения всех вакансий
     logging.info("Fetching vacancies with parameters: %s", params)
-
-    # Получение вакансий из API HH с параметрами
     try:
-        vacancies = hh_api.get('vacancies', params=params)
-        logging.info("Vacancies fetched successfully.")
-
+        while True:
+            # Получение вакансий из API HH с параметрами
+            response = hh_api.get('vacancies', params=params)
+            vacancies = response.get('items', [])
+            all_vacancies.extend(vacancies)  # Добавляем полученные вакансии в общий список
+            # Проверка на наличие следующей страницы
+            if response.get('pages', 0) <= params['page'] + 1:
+                break  # Если больше нет страниц, выходим из цикла
+            params['page'] += 1  # Переход к следующей странице
         # Логирование результата
-        logging.info("Vacancies data: %s", vacancies)
-
-        return jsonify(vacancies)
+        logging.info("Vacancies fetched successfully. Total vacancies: %d", len(all_vacancies))
+        # Сохранение данных в JSON файл
+        with open('vacancies.json', 'w', encoding='utf-8') as f:
+            json.dump(all_vacancies, f, ensure_ascii=False, indent=4)
+            logging.info("Vacancies data saved to vacancies.json")
+        return jsonify(all_vacancies)
     except Exception as e:
         logging.error("Error fetching vacancies: %s", str(e))
         return jsonify({"error": "Failed to fetch vacancies"}), 500
 
+@app.route('/vacancy/<int:vacancy_id>', methods=['GET'])
+def get_vacancy_by_id(vacancy_id):
+    """Получение вакансии по ID"""
+    try:
+        vacancy = hh_api.get(f'vacancies/{vacancy_id}')
+        logging.info("Vacancy fetched successfully: %s", vacancy)
+        return jsonify(vacancy), 200, {'Content-Type': 'application/json; charset=utf-8'}
+    except Exception as e:
+        logging.error("Error fetching vacancy by ID: %s", str(e))
+        return jsonify({"error": "Failed to fetch vacancy"}), 500
+
 
 if __name__ == '__main__':
+    init_db()  # Инициализация базы данных
     app.run(debug=True)
