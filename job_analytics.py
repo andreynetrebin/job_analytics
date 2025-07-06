@@ -7,9 +7,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from datetime import datetime
 from dotenv import load_dotenv
+from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
 from models import TemporaryVacancy, Vacancy, ExperienceLevel, WorkFormat, KeySkill, Salary, ProfessionalRole, \
     EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_key_skills, vacancy_work_schedules, \
-    Employer, Industry, employer_industries
+    Employer, Industry, employer_industries, SearchQuery
 
 # Настройка логирования
 log_file_path = 'job_analytics.log'
@@ -30,6 +31,13 @@ engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 
 FLASK_SERVER_URL = os.getenv('SERVER_HOST')
+
+# Настройки API HH
+client_id = os.getenv('CLIENT_ID')
+client_secret = os.getenv('CLIENT_SECRET')
+redirect_uri = os.getenv('REDIRECT_URI')  # Получаем Redirect URI из .env
+base_url = 'https://api.hh.ru'  # Базовый URL для API HH
+hh_api = RestApiTool(base_url)
 
 
 def parse_datetime(date_str):
@@ -75,19 +83,47 @@ def load_temp_vacancies_from_json(json_file_path):
 
 def fetch_vacancies():
     """Сбор данных о вакансиях и сохранение в temporary_vacancies."""
-    try:
-        response = requests.get(f'{FLASK_SERVER_URL}/vacancies')
-        if response.status_code == 200:
-            vacancies_data = response.json()
-            # Формируем имя файла с текущей датой
-            current_date = datetime.now()
-            file_name = f'vacancies_data/vacancies_{current_date.year}_{current_date.month}_{current_date.day}.json'
-            with open(file_name, 'w', encoding='utf-8') as f:
-                json.dump(vacancies_data, f, ensure_ascii=False, indent=4)
-                logging.info(f"Vacancies data saved to {file_name}")
+    session = Session()
+    # Получаем активные поисковые запросы из базы данных
+    active_queries = session.query(SearchQuery).filter_by(is_active=True).all()
+    logging.info("Fetching vacancies with active search queries.")
+    for query in active_queries:
+        all_vacancies = []  # Список для хранения всех вакансий
+        params = {
+            'text': query.query,  # Используем текст из активного поискового запроса
+            'per_page': 20,  # Количество вакансий на странице
+            'page': 0,  # Начальная страница
+            'date_from': '2025-07-06T00:00:00'
+        }
 
-            session = Session()
-            for vacancy in vacancies_data:
+        logging.info("Fetching vacancies with parameters: %s", params)
+        try:
+            while True:
+                # Получение вакансий из API HH с параметрами
+                response = hh_api.get('vacancies', params=params)
+                vacancies = response.get('items', [])
+                all_vacancies.extend(vacancies)  # Добавляем полученные вакансии в общий список
+                # Проверка на наличие следующей страницы
+                if response.get('pages', 0) <= params['page'] + 1:
+                    break  # Если больше нет страниц, выходим из цикла
+                params['page'] += 1  # Переход к следующей странице
+
+            # Логирование результата
+            logging.info("Vacancies fetched successfully for query '%s'. Total vacancies: %d", query.query,
+                         len(vacancies))
+
+            # Сохранение данных в JSON файл для каждого поискового запроса
+            date_str = datetime.now().strftime('%Y-%m-%d')  # Формат даты
+            filename = f'vacancies_data/vacancies_query_{query.id}_{date_str}.json'
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(vacancies, f, ensure_ascii=False, indent=4)
+                logging.info("Vacancies data saved to %s", filename)
+
+            # Очистка таблицы перед загрузкой новых данных
+            session.query(TemporaryVacancy).delete()
+            session.commit()
+
+            for vacancy in vacancies:
                 temp_vacancy = TemporaryVacancy(
                     external_id=vacancy['id'],
                     title=vacancy['name'],
@@ -98,12 +134,11 @@ def fetch_vacancies():
                 )
                 session.add(temp_vacancy)
             session.commit()
-            logging.info(f"Loaded {len(vacancies_data)} vacancies into temporary_vacancies.")
+            logging.info(f"Loaded {len(vacancies)} vacancies into temporary_vacancies.")
             session.close()
-        else:
-            logging.error(f"Failed to fetch vacancies: {response.status_code} - {response.text}")
-    except Exception as e:
-        logging.error(f"Error fetching vacancies: {str(e)}")
+        except Exception as e:
+            logging.error("Error fetching vacancies for query '%s': %s", query.query, str(e))
+            session.close()
 
 
 def check_for_new_vacancies():

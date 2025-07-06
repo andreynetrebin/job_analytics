@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard</title>
+</head>
+<body>
+    <h1>Admin Dashboard</h1>
+    <h2>Search Queries</h2>
+    <table>
+        <tr>
+            <th>ID</th>
+            <th>Query</th>
+            <th>Is Active</th>
+            <th>Actions</th>
+        </tr>
+        {% for query in queries %}
+        <tr>
+            <td>{{ query.id }}</td>
+            <td>{{ query.query }}</td>
+            <td>{{ query.is_active }}</td>
+            <td>
+                {% if not query.is_active %}
+                <form action="{{ url_for('approve_search_query', query_id=query.id) }}" method="POST">
+                    <button type="submit">Approve</button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    <a href="{{ url_for('logout') }}">Logout</a>
+</body>
+</html>

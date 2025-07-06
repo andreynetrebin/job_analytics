@@ -1,8 +1,8 @@
-"""add unset links employment_form, working_hours
+"""fixed search_queries table
 
-Revision ID: 8253d39f7d06
-Revises: 884981158327
-Create Date: 2025-07-04 21:16:20.595246
+Revision ID: 663e0b42042f
+Revises: 5a5bcdaab563
+Create Date: 2025-07-06 18:41:22.925172
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '8253d39f7d06'
-down_revision: Union[str, Sequence[str], None] = '884981158327'
+revision: str = '663e0b42042f'
+down_revision: Union[str, Sequence[str], None] = '5a5bcdaab563'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
