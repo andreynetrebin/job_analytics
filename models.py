@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, DECIMAL, DateTime, Table, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, DECIMAL, DateTime, Table, Boolean, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -49,6 +49,10 @@ class Employer(Base):
     area = Column(String(255))
     accredited_it_employer = Column(Boolean, default=False)
     open_vacancies = Column(Integer)
+    total_rating = Column(Float, nullable=True, default=0.0)  # Значение по умолчанию 0.0
+    reviews_count = Column(Integer, nullable=True, default=0)  # Значение по умолчанию 0
+    created_at = Column(DateTime, default=lambda: datetime.now(moscow_tz))  # Дата создания
+    updated_at = Column(DateTime, default=lambda: datetime.now(moscow_tz), onupdate=lambda: datetime.now(moscow_tz))  # Дата изменения
     industries = relationship("Industry", secondary=employer_industries, backref='employers')
 
 class ProfessionalRole(Base):
