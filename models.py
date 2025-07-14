@@ -134,16 +134,6 @@ class Vacancy(Base):
     salary = relationship("Salary", back_populates="vacancy", uselist=False)
     status_history = relationship("VacancyStatusHistory", back_populates="vacancy")
 
-class TemporaryVacancy(Base):
-    __tablename__ = 'temporary_vacancies'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    external_id = Column(String(255), unique=True, nullable=False)
-    title = Column(String(255), nullable=False)
-    employer = Column(String(255))
-    status = Column(String(50), nullable=False)
-    professional_role = Column(String(255))
-    created_at = Column(DateTime, default=lambda: datetime.now(moscow_tz))
-
 class VacancyStatusHistory(Base):
     __tablename__ = 'vacancy_status_history'
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -175,3 +165,35 @@ Vacancy.search_query = relationship("SearchQuery", back_populates="vacancies")  
 
 # Обновление связи в классе Salary
 Salary.vacancy = relationship("Vacancy", back_populates="salary")
+
+
+class KeySkillHistory(Base):
+    __tablename__ = 'key_skill_history'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    vacancy_id = Column(Integer, ForeignKey('vacancies.id'), nullable=False)
+    key_skill_id = Column(Integer, ForeignKey('key_skills.id'), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(moscow_tz))  # Дата создания записи
+    is_active = Column(Boolean, default=True)  # Статус активности записи
+
+    key_skill = relationship("KeySkill")
+    vacancy = relationship("Vacancy", back_populates="key_skill_history")
+class SalaryHistory(Base):
+    __tablename__ = 'salary_history'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    salary_id = Column(Integer, ForeignKey('salaries.id'), nullable=False)
+    vacancy_id = Column(Integer, ForeignKey('vacancies.id'), nullable=False)
+    salary_from = Column(DECIMAL(10, 2))
+    salary_to = Column(DECIMAL(10, 2))
+    currency = Column(String(10))
+    mode_id = Column(String(50))
+    mode_name = Column(String(50))
+    created_at = Column(DateTime, default=lambda: datetime.now(moscow_tz))  # Дата создания записи
+    is_active = Column(Boolean, default=True)  # Статус активности записи
+
+    salary = relationship("Salary")
+    vacancy = relationship("Vacancy")
+
+
+# Обновление связи в классе Vacancy для исторических таблиц
+Vacancy.key_skill_history = relationship("KeySkillHistory", back_populates="vacancy")
+Vacancy.salary_history = relationship("SalaryHistory", back_populates="vacancy")
