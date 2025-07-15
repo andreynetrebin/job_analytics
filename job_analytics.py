@@ -47,8 +47,8 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-        'date_from': '2025-07-10T07:00:00',
-        'date_to': '2025-07-14T23:00:00'
+        'date_from': '2025-07-11T14:00:00',
+        'date_to': '2025-07-11T20:00:00'
     }
     logging.info("Fetching vacancies with parameters: %s", params)
     all_vacancies = []
@@ -71,6 +71,7 @@ def fetch_vacancies(session, query):
             logging.info("Vacancies data saved to %s", filename)
 
         for vacancy in all_vacancies:
+            time.sleep(2)
             process_vacancy(vacancy, session, query)
 
     except Exception as e:
@@ -84,57 +85,14 @@ def process_vacancy(vacancy_data, session, query):
     existing_vacancy = session.query(Vacancy).filter_by(external_id=external_id).first()
 
     if existing_vacancy:
-        # Если вакансия уже существует, проверяем, была ли она архивирована
-        if existing_vacancy.status == 'Архивный' and not vacancy_data.get('archived', False):
-            # Вакансия возобновляется
-            existing_vacancy.status = 'Активный'
-            existing_vacancy.updated_at = datetime.now()
+        logging.info(f"Vacancy with external ID {external_id} already exists. Skipping.")
+        return  # Вакансия уже существует, пропускаем
 
-            # Добавляем запись в историю статусов
-            created_at_prev_status = existing_vacancy.updated_at
-            created_at_cur_status = datetime.now()
-            duration = (created_at_cur_status - created_at_prev_status).days
-
-            status_history = VacancyStatusHistory(
-                vacancy_id=existing_vacancy.id,
-                prev_status='Архивный',
-                cur_status='Активный',
-                created_at_prev_status=created_at_prev_status,
-                created_at_cur_status=created_at_cur_status,
-                duration=duration,
-                type_changed='Возобновление'
-            )
-            session.add(status_history)
-            logging.info(f"Updated status of existing vacancy {external_id} to 'Active'.")
-
-            # Обновляем ключевые навыки, если они изменились
-            new_key_skills = get_key_skills(session, external_id)
-            current_key_skills = {skill.id for skill in existing_vacancy.key_skills}  # Предполагается, что у вас есть связь с ключевыми навыками
-            if current_key_skills != new_key_skills:
-                for skill_id in new_key_skills - current_key_skills:
-                    session.add(KeySkillHistory(vacancy_id=existing_vacancy.id, skill_id=skill_id, changed_at=datetime.now()))
-
-            # Обновляем информацию о зарплате, если она изменилась
-            salary_data = vacancy_data.get('salary')
-            if salary_data and (existing_vacancy.salary_from != salary_data.get('from') or existing_vacancy.salary_to != salary_data.get('to')):
-                session.add(SalaryHistory(vacancy_id=existing_vacancy.id, salary_from=salary_data.get('from'), salary_to=salary_data.get('to'), changed_at=datetime.now()))
-
-        # Если вакансия активна, просто обновляем информацию
-        else:
-            update_vacancy(existing_vacancy, vacancy_data, session)
-
-    else:
-        # Если вакансия новая, создаем её
+    try:
+        # Создаем новую вакансию
         create_vacancy(vacancy_data, session, query)
-
-
-def update_vacancy(existing_vacancy, vacancy_data, session):
-    """Обновление информации о существующей вакансии."""
-    # Обновляем поля вакансии
-    existing_vacancy.title = vacancy_data['name']
-    existing_vacancy.updated_at = datetime.now()
-    session.commit()
-    logging.info(f"Updated existing vacancy {existing_vacancy.external_id}.")
+    except Exception as e:
+        logging.error(f"Error processing vacancy {external_id}: {str(e)}")
 
 
 def create_vacancy(vacancy_data, session, query):
@@ -144,17 +102,22 @@ def create_vacancy(vacancy_data, session, query):
         vacancy_details = hh_api.get(f'vacancies/{vacancy_data["id"]}')
 
         # Получаем информацию о работодателе из детальной информации о вакансии
-        employer_info = vacancy_details['employer']
+        employer_info = vacancy_data['employer']
         employer_id = employer_info['id']
         employer_details = hh_api.get(f'employers/{employer_id}')
 
         # Извлекаем информацию о работодателе
         employer_name = employer_info['name']
-        open_vacancies = employer_info.get('open_vacancies', 0)  # Значение по умолчанию 0
-        accredited_it_employer = employer_info.get('accredited_it_employer', False)
+        open_vacancies = employer_details.get('open_vacancies', 0)  # Значение по умолчанию 0
+        accredited_it_employer = employer_details.get('accredited_it_employer', False)
 
-        total_rating = employer_info.get('employer_rating', {}).get('total_rating')  # Значение по умолчанию 0.0
-        reviews_count = employer_info.get('employer_rating', {}).get('reviews_count')  # Значение по умолчанию 0
+        try:
+            employer_rating = employer_info['employer_rating']
+            total_rating = float(employer_rating.get('total_rating', 0.0))  # Преобразуем в float
+            reviews_count = int(employer_rating.get('reviews_count', 0))  # Преобразуем в int
+        except:
+            total_rating = 0.0  # Значение по умолчанию
+            reviews_count = 0  # Значение по умолчанию
 
         # Извлекаем area и industries из employer_details
         area_name = employer_details.get('area', {}).get('name')  # Получаем area из деталей работодателя
@@ -190,8 +153,25 @@ def create_vacancy(vacancy_data, session, query):
         key_skills_ids = get_or_create_key_skills(session, vacancy_details['key_skills'])
 
         # Извлекаем даты создания и публикации
-        created_date = parse_datetime(vacancy_details['initial_created_at']) if 'created_at' in vacancy_details else None
+        created_date = parse_datetime(
+            vacancy_details['initial_created_at']) if 'created_at' in vacancy_details else None
         published_date = parse_datetime(vacancy_details['published_at']) if 'published_at' in vacancy_details else None
+
+        # Извлекаем данные о зарплате только из salary_range
+        salary_range_data = vacancy_details.get('salary_range')
+        salary_from = None
+        salary_to = None
+        currency = 'RUB'  # Значение по умолчанию для валюты
+        mode_id = None
+        mode_name = None
+        if salary_range_data:
+            salary_from = salary_range_data.get('from')
+            salary_to = salary_range_data.get('to')
+            currency = salary_range_data.get('currency', currency)  # Обновляем валюту, если указана
+            mode = salary_range_data.get('mode')
+            if mode:
+                mode_id = mode.get('id')
+                mode_name = mode.get('name')
 
         vacancy = Vacancy(
             external_id=vacancy_data['id'],
@@ -210,6 +190,18 @@ def create_vacancy(vacancy_data, session, query):
         session.add(vacancy)
         session.commit()  # Сохраняем изменения, чтобы получить id вакансии
 
+        # Создаем запись о зарплате, если она указана
+        if salary_from is not None or salary_to is not None:
+            salary = Salary(
+                salary_from=salary_from,
+                salary_to=salary_to,
+                currency=currency,
+                mode_id=mode_id,
+                mode_name=mode_name,
+                vacancy_id=vacancy.id
+            )
+            session.add(salary)
+
         # Получаем отрасли работодателя через отдельный запрос к API
         industry_ids = get_or_create_industries(session, industries, employer)
 
@@ -220,6 +212,72 @@ def create_vacancy(vacancy_data, session, query):
 
     except Exception as e:
         logging.error(f"Error loading vacancy {vacancy_data['id']}: {str(e)}")
+
+
+def get_or_create_experience(session, experience_data):
+    """Проверка и добавление уровня опыта."""
+    experience = session.query(ExperienceLevel).filter_by(id_external=experience_data['id']).first()
+    if not experience:
+        experience = ExperienceLevel(id_external=experience_data['id'], name=experience_data['name'])
+        session.add(experience)
+        session.commit()  # Сохраняем изменения, чтобы получить id
+    return experience
+
+
+def get_or_create_professional_role(session, role_data):
+    """Проверка и добавление профессиональной роли."""
+    professional_role = session.query(ProfessionalRole).filter_by(id_external=role_data['id']).first()
+    if not professional_role:
+        professional_role = ProfessionalRole(id_external=role_data['id'], name=role_data['name'])
+        session.add(professional_role)
+        session.commit()  # Сохраняем изменения, чтобы получить id
+    return professional_role
+
+
+def get_or_create_employment_form(session, form_data):
+    """Проверка и добавление формата работы."""
+    employment_form = session.query(EmploymentForm).filter_by(id_external=form_data['id']).first()
+    if not employment_form:
+        employment_form = EmploymentForm(id_external=form_data['id'], name=form_data['name'])
+        session.add(employment_form)
+        session.commit()  # Сохраняем изменения, чтобы получить id
+    return employment_form
+
+
+def get_or_create_working_hours(session, hours_data):
+    """Проверка и добавление рабочих часов."""
+    working_hours = session.query(WorkingHours).filter_by(id_external=hours_data['id']).first()
+    if not working_hours:
+        working_hours = WorkingHours(id_external=hours_data['id'], name=hours_data['name'])
+        session.add(working_hours)
+        session.commit()  # Сохраняем изменения, чтобы получить id
+    return working_hours
+
+
+def get_or_create_work_schedules(session, work_schedule_data):
+    """Проверка и добавление графиков работы."""
+    work_schedule_ids = []
+    for ws in work_schedule_data:
+        work_schedule = session.query(WorkSchedule).filter_by(id_external=ws['id']).first()
+        if not work_schedule:
+            work_schedule = WorkSchedule(id_external=ws['id'], name=ws['name'])
+            session.add(work_schedule)
+            session.commit()  # Сохраняем изменения, чтобы получить id
+        work_schedule_ids.append(work_schedule.id)
+    return work_schedule_ids
+
+
+def get_or_create_work_formats(session, work_format_data):
+    """Проверка и добавление форматов работы."""
+    work_format_ids = []
+    for wf in work_format_data:
+        work_format = session.query(WorkFormat).filter_by(id_external=wf['id']).first()
+        if not work_format:
+            work_format = WorkFormat(id_external=wf['id'], name=wf['name'])
+            session.add(work_format)
+            session.commit()  # Сохраняем изменения, чтобы получить id
+        work_format_ids.append(work_format.id)
+    return work_format_ids
 
 
 def get_or_create_key_skills(session, key_skills_data):
