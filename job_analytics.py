@@ -7,8 +7,8 @@ from sqlalchemy import create_engine
 from datetime import datetime
 from dotenv import load_dotenv
 from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
-from models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, Salary, ProfessionalRole, \
-    EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_key_skills, vacancy_work_schedules, \
+from models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, ProfessionalRole, \
+    EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_work_schedules, \
     Employer, Industry, employer_industries, SearchQuery, VacancyStatusHistory, KeySkillHistory, SalaryHistory
 
 # Настройка логирования
@@ -47,8 +47,8 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-        'date_from': '2025-07-11T14:00:00',
-        'date_to': '2025-07-11T20:00:00'
+        'date_from': '2025-07-15T14:00:00',
+        'date_to': '2025-07-15T20:00:00'
     }
     logging.info("Fetching vacancies with parameters: %s", params)
     all_vacancies = []
@@ -149,12 +149,8 @@ def create_vacancy(vacancy_data, session, query):
         work_schedule_ids = get_or_create_work_schedules(session, vacancy_details.get('work_schedule_by_days', []))
         work_format_ids = get_or_create_work_formats(session, vacancy_details.get('work_format', []))
 
-        # Извлекаем ключевые навыки
-        key_skills_ids = get_or_create_key_skills(session, vacancy_details['key_skills'])
-
         # Извлекаем даты создания и публикации
-        created_date = parse_datetime(
-            vacancy_details['initial_created_at']) if 'created_at' in vacancy_details else None
+        created_date = parse_datetime(vacancy_details['initial_created_at']) if 'created_at' in vacancy_details else None
         published_date = parse_datetime(vacancy_details['published_at']) if 'published_at' in vacancy_details else None
 
         # Извлекаем данные о зарплате только из salary_range
@@ -173,6 +169,7 @@ def create_vacancy(vacancy_data, session, query):
                 mode_id = mode.get('id')
                 mode_name = mode.get('name')
 
+        # Создаем запись о вакансии
         vacancy = Vacancy(
             external_id=vacancy_data['id'],
             title=vacancy_data['name'],
@@ -190,9 +187,12 @@ def create_vacancy(vacancy_data, session, query):
         session.add(vacancy)
         session.commit()  # Сохраняем изменения, чтобы получить id вакансии
 
+        # Теперь, когда у нас есть vacancy.id, мы можем получить ключевые навыки
+        get_or_create_key_skills(session, vacancy_details['key_skills'], vacancy.id)
+
         # Создаем запись о зарплате, если она указана
         if salary_from is not None or salary_to is not None:
-            salary = Salary(
+            salary_history = SalaryHistory(
                 salary_from=salary_from,
                 salary_to=salary_to,
                 currency=currency,
@@ -200,13 +200,25 @@ def create_vacancy(vacancy_data, session, query):
                 mode_name=mode_name,
                 vacancy_id=vacancy.id
             )
-            session.add(salary)
+            session.add(salary_history)
+
+        # Создаем запись о статусе вакансии
+        vacancy_status_history = VacancyStatusHistory(
+            vacancy_id=vacancy.id,
+            prev_status="Отсутствует",
+            cur_status="Активный",
+            created_at_prev_status=created_date,
+            created_at_cur_status=created_date,
+            duration=0,
+            type_changed="Первичная загрузка"
+        )
+        session.add(vacancy_status_history)
 
         # Получаем отрасли работодателя через отдельный запрос к API
-        industry_ids = get_or_create_industries(session, industries, employer)
+        get_or_create_industries(session, industries, employer)
 
         # Сохраняем связи
-        save_relations(session, vacancy.id, work_format_ids, key_skills_ids, work_schedule_ids, industry_ids)
+        save_relations(session, vacancy.id, work_format_ids, work_schedule_ids)
 
         logging.info(f"Vacancy {vacancy_data['id']} loaded successfully.")
 
@@ -280,28 +292,28 @@ def get_or_create_work_formats(session, work_format_data):
     return work_format_ids
 
 
-def get_or_create_key_skills(session, key_skills_data):
-    """Проверка и добавление ключевых навыков."""
+def get_or_create_key_skills(session, key_skills_data, vacancy_id):
+    """Проверка и добавление ключевых навыков в таблицу key_skill_history."""
     key_skills_ids = []
     for skill_data in key_skills_data:
+        # Проверяем, существует ли ключевой навык
         key_skill = session.query(KeySkill).filter_by(name=skill_data['name']).first()
         if not key_skill:
+            # Если не существует, создаем новый ключевой навык
             key_skill = KeySkill(name=skill_data['name'])
             session.add(key_skill)
             session.commit()  # Сохраняем изменения, чтобы получить id
+
+        # Создаем запись в key_skill_history
+        key_skill_history = KeySkillHistory(
+            vacancy_id=vacancy_id,
+            key_skill_id=key_skill.id,
+        )
+        session.add(key_skill_history)
         key_skills_ids.append(key_skill.id)
+
+    session.commit()  # Сохраняем все изменения в конце
     return key_skills_ids
-
-
-def get_key_skills(session, vacancy_id):
-    """Получение ключевых навыков через API."""
-    try:
-        vacancy_details = hh_api.get(f'vacancies/{vacancy_id}')
-        key_skills_ids = get_or_create_key_skills(session, vacancy_details['key_skills'])
-        return key_skills_ids
-    except Exception as e:
-        logging.error(f"Failed to fetch key skills for vacancy ID {vacancy_id}: {str(e)}")
-        return []
 
 
 def get_or_create_industries(session, industries_data, employer):
@@ -324,19 +336,23 @@ def get_or_create_industries(session, industries_data, employer):
     return industry_ids
 
 
-def save_relations(session, vacancy_id, work_format_ids, key_skills_ids, work_schedule_ids, industry_ids):
-    """Сохранение форматов работы, ключевых навыков и графиков работы в промежуточные таблицы."""
+def save_relations(session, vacancy_id, work_format_ids, work_schedule_ids):
+    """Сохранение форматов работы и графиков работы в промежуточные таблицы."""
+
+    # Сохранение форматов работы
     for work_format_id in work_format_ids:
         session.execute(
-            vacancy_work_formats.insert().values(vacancy_id=vacancy_id, work_format_id=work_format_id))
+            vacancy_work_formats.insert().values(vacancy_id=vacancy_id, work_format_id=work_format_id)
+        )
 
-    for key_skill_id in key_skills_ids:
-        session.execute(
-            vacancy_key_skills.insert().values(vacancy_id=vacancy_id, key_skill_id=key_skill_id))
-
+    # Сохранение графиков работы
     for work_schedule_id in work_schedule_ids:
         session.execute(
-            vacancy_work_schedules.insert().values(vacancy_id=vacancy_id, work_schedule_id=work_schedule_id))
+            vacancy_work_schedules.insert().values(vacancy_id=vacancy_id, work_schedule_id=work_schedule_id)
+        )
+
+    # Сохраняем все изменения в сессии
+    session.commit()
 
 
 def main():
