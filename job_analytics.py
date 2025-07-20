@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 from datetime import datetime
 from dotenv import load_dotenv
+import pytz
 from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
 from models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, ProfessionalRole, \
     EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_work_schedules, \
@@ -33,6 +34,8 @@ Session = sessionmaker(bind=engine)
 # Настройки API HH
 base_url = 'https://api.hh.ru'  # Базовый URL для API HH
 hh_api = RestApiTool(base_url)
+
+moscow_tz = pytz.timezone('Europe/Moscow')
 
 
 def parse_datetime(date_str):
@@ -82,17 +85,157 @@ def fetch_vacancies(session, query):
 def process_vacancy(vacancy_data, session, query):
     """Обработка и сохранение вакансии в базу данных."""
     external_id = vacancy_data['id']
-    existing_vacancy = session.query(Vacancy).filter_by(external_id=external_id).first()
+    search_query_id = query.id
+
+    # Проверяем существование вакансии по external_id и search_query_id
+    existing_vacancy = session.query(Vacancy).filter_by(external_id=external_id,
+                                                        search_query_id=search_query_id).first()
 
     if existing_vacancy:
-        logging.info(f"Vacancy with external ID {external_id} already exists. Skipping.")
-        return  # Вакансия уже существует, пропускаем
+        logging.info(f"Vacancy with external ID {external_id} already exists. Checking status.")
+
+        # Проверяем статус вакансии
+        if existing_vacancy.status == "Архивный":
+            logging.info(f"Vacancy {external_id} is archived. Reviving it.")
+            revive_vacancy(existing_vacancy, vacancy_data, session)
+        else:
+            logging.info(f"Vacancy {external_id} is already active. Skipping.")
+        return  # Вакансия уже существует и активна, пропускаем
 
     try:
         # Создаем новую вакансию
         create_vacancy(vacancy_data, session, query)
     except Exception as e:
         logging.error(f"Error processing vacancy {external_id}: {str(e)}")
+
+
+def revive_vacancy(existing_vacancy, vacancy_data, session):
+    """Возобновление архивной вакансии."""
+    # Обновляем статус вакансии
+    existing_vacancy.status = "Активный"
+    existing_vacancy.updated_at = datetime.now(moscow_tz)
+    existing_vacancy.published_date = parse_datetime(
+        vacancy_data['published_at']) if 'published_at' in vacancy_data else existing_vacancy.published_date
+
+    # Обновляем запись в VacancyStatusHistory
+    vacancy_status_history = VacancyStatusHistory(
+        vacancy_id=existing_vacancy.id,
+        prev_status="Архивный",
+        cur_status="Активный",
+        created_at_prev_status=existing_vacancy.updated_at,
+        created_at_cur_status=datetime.now(moscow_tz),
+        duration=(datetime.now(moscow_tz) - existing_vacancy.updated_at).days,
+        type_changed="Возобновление"
+    )
+    session.add(vacancy_status_history)
+
+    # Обновляем историю зарплаты
+    update_salary_history(existing_vacancy, vacancy_data, session)
+
+    # Получаем детальную информацию о вакансии для получения ключевых навыков
+    vacancy_details = hh_api.get(f'vacancies/{vacancy_data["id"]}')
+
+    # Обновляем ключевые навыки
+    update_key_skills(existing_vacancy, vacancy_details, session)
+
+    # Сохраняем изменения
+    session.commit()
+    logging.info(f"Vacancy {existing_vacancy.external_id} revived successfully.")
+
+
+def update_salary_history(existing_vacancy, vacancy_data, session):
+    """Обновление истории зарплаты для вакансии."""
+    salary_range_data = vacancy_data.get('salary_range')
+    salary_from = salary_range_data.get('from') if salary_range_data else None
+    salary_to = salary_range_data.get('to') if salary_range_data else None
+    currency = salary_range_data.get('currency', 'RUB') if salary_range_data else 'RUB'
+    mode = salary_range_data.get('mode', {})
+    mode_id = mode.get('id')
+    mode_name = mode.get('name')
+
+    # Получаем текущую активную запись зарплаты
+    current_salary_history = session.query(SalaryHistory).filter_by(vacancy_id=existing_vacancy.id,
+                                                                    is_active=True).first()
+
+    if current_salary_history:
+        # Проверяем изменения в зарплате
+        if (current_salary_history.salary_from != salary_from or
+                current_salary_history.salary_to != salary_to or
+                current_salary_history.currency != currency or
+                current_salary_history.mode_id != mode_id or
+                current_salary_history.mode_name != mode_name):
+            # Деактивируем текущую запись
+            current_salary_history.is_active = False
+            current_salary_history.updated_at = datetime.now(moscow_tz)
+
+            # Создаем новую запись
+            new_salary_history = SalaryHistory(
+                vacancy_id=existing_vacancy.id,
+                salary_from=salary_from,
+                salary_to=salary_to,
+                currency=currency,
+                mode_id=mode_id,
+                mode_name=mode_name
+            )
+            session.add(new_salary_history)
+            logging.info(f"Salary history updated for vacancy {existing_vacancy.external_id}.")
+    else:
+        # Если записи нет, создаем новую
+        new_salary_history = SalaryHistory(
+            vacancy_id=existing_vacancy.id,
+            salary_from=salary_from,
+            salary_to=salary_to,
+            currency=currency,
+            mode_id=mode_id,
+            mode_name=mode_name
+        )
+        session.add(new_salary_history)
+        logging.info(f"New salary history created for vacancy {existing_vacancy.external_id}.")
+
+
+def update_key_skills(existing_vacancy, vacancy_details, session):
+    """Обновление ключевых навыков для вакансии."""
+    current_key_skills = {ks.key_skill_id for ks in existing_vacancy.key_skill_history if ks.is_active}
+    new_key_skills = {skill['name']: skill for skill in vacancy_details.get('key_skills', [])}
+
+    # Проверяем новые навыки
+    for skill_name, skill_data in new_key_skills.items():
+        key_skill = session.query(KeySkill).filter_by(name=skill_name).first()
+        if key_skill:
+            if key_skill.id not in current_key_skills:
+                # Если навык новый, добавляем его в историю
+                key_skill_history = KeySkillHistory(
+                    vacancy_id=existing_vacancy.id,
+                    key_skill_id=key_skill.id
+                )
+                session.add(key_skill_history)
+                logging.info(f"New key skill '{skill_name}' added for vacancy {existing_vacancy.external_id}.")
+        else:
+            # Если навык не найден, создаем его
+            key_skill = KeySkill(name=skill_name)
+            session.add(key_skill)
+            session.commit()  # Сохраняем, чтобы получить id
+            key_skill_history = KeySkillHistory(
+                vacancy_id=existing_vacancy.id,
+                key_skill_id=key_skill.id
+            )
+            session.add(key_skill_history)
+            logging.info(f"Key skill '{skill_name}' created and added for vacancy {existing_vacancy.external_id}.")
+
+    # Проверяем ушедшие навыки
+    for existing_skill_id in current_key_skills:
+        if existing_skill_id not in new_key_skills.values():
+            # Деактивируем старую запись
+            skill_history = session.query(KeySkillHistory).filter_by(vacancy_id=existing_vacancy.id,
+                                                                     key_skill_id=existing_skill_id,
+                                                                     is_active=True).first()
+            if skill_history:
+                skill_history.is_active = False
+                skill_history.updated_at = datetime.now(moscow_tz)
+                logging.info(
+                    f"Key skill with ID {existing_skill_id} deactivated for vacancy {existing_vacancy.external_id}.")
+
+    session.commit()
 
 
 def create_vacancy(vacancy_data, session, query):
@@ -150,7 +293,8 @@ def create_vacancy(vacancy_data, session, query):
         work_format_ids = get_or_create_work_formats(session, vacancy_details.get('work_format', []))
 
         # Извлекаем даты создания и публикации
-        created_date = parse_datetime(vacancy_details['initial_created_at']) if 'created_at' in vacancy_details else None
+        created_date = parse_datetime(
+            vacancy_details['initial_created_at']) if 'created_at' in vacancy_details else None
         published_date = parse_datetime(vacancy_details['published_at']) if 'published_at' in vacancy_details else None
 
         # Извлекаем данные о зарплате только из salary_range
@@ -207,8 +351,8 @@ def create_vacancy(vacancy_data, session, query):
             vacancy_id=vacancy.id,
             prev_status="Отсутствует",
             cur_status="Активный",
-            created_at_prev_status=created_date,
-            created_at_cur_status=created_date,
+            created_at_prev_status=vacancy.created_at,
+            created_at_cur_status=vacancy.created_at,
             duration=0,
             type_changed="Первичная загрузка"
         )
