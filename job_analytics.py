@@ -50,8 +50,8 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-        'date_from': '2025-07-15T14:00:00',
-        'date_to': '2025-07-15T20:00:00'
+        # 'date_from': '2025-07-15T14:00:00',
+        # 'date_to': '2025-07-16T14:00:00'
     }
     logging.info("Fetching vacancies with parameters: %s", params)
     all_vacancies = []
@@ -73,13 +73,58 @@ def fetch_vacancies(session, query):
             json.dump(all_vacancies, f, ensure_ascii=False, indent=4)
             logging.info("Vacancies data saved to %s", filename)
 
+        # Получаем все вакансии из базы данных для текущего поискового запроса
+        existing_vacancies = session.query(Vacancy).filter_by(search_query_id=query.id).all()
+        existing_vacancy_ids = {vacancy.external_id for vacancy in existing_vacancies}
+
+        # Список внешних ID полученных вакансий
+        fetched_vacancy_ids = {vacancy['id'] for vacancy in all_vacancies}
+
+        # Проверяем, какие вакансии отсутствуют среди полученных
+        missing_vacancy_ids = existing_vacancy_ids - fetched_vacancy_ids
+
         for vacancy in all_vacancies:
             time.sleep(2)
             process_vacancy(vacancy, session, query)
 
+        # Обработка отсутствующих вакансий
+        for missing_id in missing_vacancy_ids:
+            logging.info(f"Vacancy with external ID {missing_id} is missing from the fetched data. Checking status.")
+            missing_vacancy = session.query(Vacancy).filter_by(external_id=missing_id).first()
+            if missing_vacancy:
+                # Запрашиваем актуальный статус вакансии
+                vacancy_details = hh_api.get(f'vacancies/{missing_id}')
+                if vacancy_details.get('archived', False):
+                    # Если статус архивный, обновляем статус в базе
+                    update_vacancy_status_to_archived(missing_vacancy, session)
+                else:
+                    logging.info(f"Vacancy {missing_id} is still active.")
+
     except Exception as e:
         logging.error("Error fetching vacancies for query '%s': %s", query.query, str(e))
         session.rollback()  # Rollback in case of error
+
+
+def update_vacancy_status_to_archived(vacancy, session):
+    """Обновление статуса вакансии на 'Архивный'."""
+    # Создаем запись в VacancyStatusHistory
+    vacancy_status_history = VacancyStatusHistory(
+        vacancy_id=vacancy.id,
+        prev_status="Активный",
+        cur_status="Архивный",
+        created_at_prev_status=vacancy.updated_at,
+        created_at_cur_status=datetime.now(moscow_tz),
+        duration=(datetime.now(moscow_tz) - vacancy.updated_at).days,
+        type_changed="Отправлена в архив"
+    )
+    session.add(vacancy_status_history)
+
+    # Обновляем статус вакансии
+    vacancy.status = "Архивный"
+    vacancy.updated_at = datetime.now(moscow_tz)
+
+    session.commit()
+    logging.info(f"Vacancy {vacancy.external_id} status updated to 'Архивный'.")
 
 
 def process_vacancy(vacancy_data, session, query):
@@ -129,11 +174,11 @@ def revive_vacancy(existing_vacancy, vacancy_data, session):
     )
     session.add(vacancy_status_history)
 
-    # Обновляем историю зарплаты
-    update_salary_history(existing_vacancy, vacancy_data, session)
-
     # Получаем детальную информацию о вакансии для получения ключевых навыков
     vacancy_details = hh_api.get(f'vacancies/{vacancy_data["id"]}')
+
+    # Обновляем историю зарплаты
+    update_salary_history(existing_vacancy, vacancy_details, session)
 
     # Обновляем ключевые навыки
     update_key_skills(existing_vacancy, vacancy_details, session)
@@ -195,7 +240,10 @@ def update_salary_history(existing_vacancy, vacancy_data, session):
 
 def update_key_skills(existing_vacancy, vacancy_details, session):
     """Обновление ключевых навыков для вакансии."""
+
+    # Получаем текущие активные ключевые навыки
     current_key_skills = {ks.key_skill_id for ks in existing_vacancy.key_skill_history if ks.is_active}
+    # Получаем новые ключевые навыки из деталей вакансии
     new_key_skills = {skill['name']: skill for skill in vacancy_details.get('key_skills', [])}
 
     # Проверяем новые навыки
@@ -223,8 +271,11 @@ def update_key_skills(existing_vacancy, vacancy_details, session):
             logging.info(f"Key skill '{skill_name}' created and added for vacancy {existing_vacancy.external_id}.")
 
     # Проверяем ушедшие навыки
+    new_skill_ids = {session.query(KeySkill).filter_by(name=skill_name).first().id for skill_name in
+                     new_key_skills.keys() if session.query(KeySkill).filter_by(name=skill_name).first()}
+
     for existing_skill_id in current_key_skills:
-        if existing_skill_id not in new_key_skills.values():
+        if existing_skill_id not in new_skill_ids:
             # Деактивируем старую запись
             skill_history = session.query(KeySkillHistory).filter_by(vacancy_id=existing_vacancy.id,
                                                                      key_skill_id=existing_skill_id,
@@ -234,6 +285,20 @@ def update_key_skills(existing_vacancy, vacancy_details, session):
                 skill_history.updated_at = datetime.now(moscow_tz)
                 logging.info(
                     f"Key skill with ID {existing_skill_id} deactivated for vacancy {existing_vacancy.external_id}.")
+
+    # Проверяем, есть ли среди новых навыков те, которые были деактивированы
+    for skill_name in new_key_skills.keys():
+        key_skill = session.query(KeySkill).filter_by(name=skill_name).first()
+        if key_skill:
+            # Проверяем, есть ли история для этого навыка
+            skill_history = session.query(KeySkillHistory).filter_by(vacancy_id=existing_vacancy.id,
+                                                                     key_skill_id=key_skill.id,
+                                                                     is_active=False).first()
+            if skill_history:
+                # Если навык был деактивирован, активируем его
+                skill_history.is_active = True
+                skill_history.updated_at = datetime.now(moscow_tz)
+                logging.info(f"Key skill '{skill_name}' reactivated for vacancy {existing_vacancy.external_id}.")
 
     session.commit()
 
