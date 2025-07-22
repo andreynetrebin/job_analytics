@@ -8,6 +8,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import pytz
 from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
+from util import send_email
 from models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, ProfessionalRole, \
     EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_work_schedules, \
     Employer, Industry, employer_industries, SearchQuery, VacancyStatusHistory, KeySkillHistory, SalaryHistory
@@ -50,11 +51,17 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-        # 'date_from': '2025-07-15T14:00:00',
-        # 'date_to': '2025-07-16T14:00:00'
+        # 'date_from': '2025-07-17T16:00:00',
+        # 'date_to': '2025-07-17T17:00:00'
     }
     logging.info("Fetching vacancies with parameters: %s", params)
     all_vacancies = []
+    error_ids = []
+    new_vacancies_count = 0
+    skipped_vacancies_count = 0
+    error_count = 0
+    new_vacancies = []  # Список для хранения новых вакансий
+
     try:
         while True:
             response = hh_api.get('vacancies', params=params)
@@ -85,7 +92,14 @@ def fetch_vacancies(session, query):
 
         for vacancy in all_vacancies:
             time.sleep(2)
-            process_vacancy(vacancy, session, query)
+            try:
+                process_vacancy(vacancy, session, query)
+                new_vacancies_count += 1
+                new_vacancies.append(vacancy)  # Добавляем вакансию в список новых
+            except Exception as e:
+                logging.error(f"Error processing vacancy {vacancy['id']}: {str(e)}")
+                error_ids.append(vacancy['id'])
+                error_count += 1
 
         # Обработка отсутствующих вакансий
         for missing_id in missing_vacancy_ids:
@@ -99,10 +113,105 @@ def fetch_vacancies(session, query):
                     update_vacancy_status_to_archived(missing_vacancy, session)
                 else:
                     logging.info(f"Vacancy {missing_id} is still active.")
+                    skipped_vacancies_count += 1
 
     except Exception as e:
         logging.error("Error fetching vacancies for query '%s': %s", query.query, str(e))
         session.rollback()  # Rollback in case of error
+
+    # Отчет о результатах
+    total_vacancies = len(all_vacancies)
+    logging.info("Отчет о результатах сбора вакансий:")
+    logging.info("Всего было получено: %d", total_vacancies)
+    logging.info("Добавлено новых вакансий: %d", new_vacancies_count)
+    logging.info("Пропущено по причине наличия: %d", skipped_vacancies_count)
+    logging.info("С ошибками: %d", error_count)
+    if error_ids:
+        logging.info("ID вакансий с ошибками: %s", error_ids)
+
+        # Повторная попытка сохранения вакансий с ошибками
+        retry_vacancies(session, query.id, error_ids)
+
+# Отправка уведомления по электронной почте, если есть новые вакансии
+    if new_vacancies:
+        email_body = create_email_body(new_vacancies, session)  # Передаем сессию
+        send_email("Новые вакансии", email_body, query.email)  # Используем email из SearchQuery
+
+
+
+# Функция для создания HTML-таблицы с новыми вакансиями
+def create_email_body(new_vacancies, session):
+    html = """
+    <html>
+    <body>
+        <h2>Новые вакансии</h2>
+        <table border="1">
+            <tr>
+                <th>Название</th>
+                <th>Работодатель</th>
+                <th>Зарплата</th>
+                <th>Ссылка</th>
+            </tr>
+    """
+    for vacancy_data in new_vacancies:
+        # Получаем вакансию из базы данных по external_id
+        vacancy = session.query(Vacancy).filter_by(external_id=vacancy_data['id']).first()
+
+        if vacancy:
+            title = vacancy.title
+            employer = vacancy.employer.name if vacancy.employer else 'Неизвестен'
+
+            # Получаем информацию о зарплате из SalaryHistory
+            salary_history = vacancy.salary_history  # Получаем связанные записи SalaryHistory
+            if salary_history:
+                # Находим первую активную запись о зарплате
+                active_salary = next((sh for sh in salary_history if sh.is_active), None)
+                if active_salary:
+                    salary = f"{active_salary.salary_from} - {active_salary.salary_to} {active_salary.currency}"
+                else:
+                    salary = 'Не указана'
+            else:
+                salary = 'Не указана'
+
+            link = f"https://hh.ru/vacancy/{vacancy_data['id']}"
+            html += f"""
+                <tr>
+                    <td>{title}</td>
+                    <td>{employer}</td>
+                    <td>{salary}</td>
+                    <td><a href="{link}">Ссылка</a></td>
+                </tr>
+            """
+    html += """
+        </table>
+    </body>
+    </html>
+    """
+    return html
+
+
+def retry_vacancies(session, query_id, error_ids):
+    """Повторная попытка сохранения вакансий по списку error_ids."""
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    filename = f'vacancies_data/vacancies_query_{query_id}_{date_str}.json'
+
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            all_vacancies = json.load(f)
+
+        for vacancy_id in error_ids:
+            # Находим вакансию по ID
+            vacancy_data = next((vacancy for vacancy in all_vacancies if vacancy['id'] == vacancy_id), None)
+            if vacancy_data:
+                try:
+                    process_vacancy(vacancy_data, session, session.query(SearchQuery).filter_by(id=query_id).first())
+                    logging.info(f"Vacancy {vacancy_id} processed successfully on retry.")
+                except Exception as e:
+                    logging.error(f"Error processing vacancy {vacancy_id} on retry: {str(e)}")
+    except FileNotFoundError:
+        logging.error(f"File {filename} not found. Cannot retry vacancies.")
+    except json.JSONDecodeError:
+        logging.error(f"Error decoding JSON from file {filename}.")
 
 
 def update_vacancy_status_to_archived(vacancy, session):
@@ -173,7 +282,7 @@ def revive_vacancy(existing_vacancy, vacancy_data, session):
         type_changed="Возобновление"
     )
     session.add(vacancy_status_history)
-
+    time.sleep(1)
     # Получаем детальную информацию о вакансии для получения ключевых навыков
     vacancy_details = hh_api.get(f'vacancies/{vacancy_data["id"]}')
 
@@ -307,11 +416,13 @@ def create_vacancy(vacancy_data, session, query):
     """Создание объекта вакансии."""
     try:
         # Получаем детальную информацию о вакансии для получения ключевых навыков и дат
+        time.sleep(1)
         vacancy_details = hh_api.get(f'vacancies/{vacancy_data["id"]}')
 
         # Получаем информацию о работодателе из детальной информации о вакансии
         employer_info = vacancy_data['employer']
         employer_id = employer_info['id']
+        time.sleep(1)
         employer_details = hh_api.get(f'employers/{employer_id}')
 
         # Извлекаем информацию о работодателе
