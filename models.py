@@ -36,7 +36,8 @@ class Industry(Base):
     name = Column(String(255), nullable=False)
 
     # Определение отношений
-    employers = relationship("Employer", secondary=employer_industries, backref='industries_linked')
+    employers = relationship("Employer", secondary=employer_industries, backref='industries_linked',
+                             overlaps="industries_linked")
 
 
 class Employer(Base):
@@ -55,7 +56,8 @@ class Employer(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(moscow_tz), onupdate=lambda: datetime.now(moscow_tz))
 
     # Определение отношений
-    industries = relationship("Industry", secondary=employer_industries, backref='employers_linked')
+    industries = relationship("Industry", secondary=employer_industries, backref='employers_linked',
+                              overlaps="employers")
 
 
 class ProfessionalRole(Base):

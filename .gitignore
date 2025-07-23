@@ -186,3 +186,5 @@ fabric.properties
 .idea
 alembic.ini
 vacancies_data
+credentials.json
+token.json
