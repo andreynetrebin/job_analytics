@@ -51,12 +51,13 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-        # 'date_from': '2025-07-17T16:00:00',
-        # 'date_to': '2025-07-17T17:00:00'
+        'date_from': '2025-07-18T15:00:00',
+        'date_to': '2025-07-18T20:00:00'
     }
-    logging.info("Fetching vacancies with parameters: %s", params)
+    logging.info(f"Fetching vacancies with parameters: {params}")
     all_vacancies = []
     error_ids = []
+    missing_status_ids = []  # Список для вакансий с отсутствующим статусом
     new_vacancies_count = 0
     skipped_vacancies_count = 0
     error_count = 0
@@ -70,15 +71,15 @@ def fetch_vacancies(session, query):
             if response.get('pages', 0) <= params['page'] + 1:
                 break
             params['page'] += 1
+            time.sleep(5)
 
-        logging.info("Vacancies fetched successfully for query '%s'. Total vacancies: %d", query.query,
-                     len(all_vacancies))
+        logging.info(f"Vacancies fetched successfully for query '{query.query}'. Total vacancies: {len(all_vacancies)}")
 
         date_str = datetime.now().strftime('%Y-%m-%d')
         filename = f'vacancies_data/vacancies_query_{query.id}_{date_str}.json'
         with open(filename, 'w', encoding='utf-8') as f:
             json.dump(all_vacancies, f, ensure_ascii=False, indent=4)
-            logging.info("Vacancies data saved to %s", filename)
+            logging.info(f"Vacancies data saved to {filename}")
 
         # Получаем все вакансии из базы данных для текущего поискового запроса
         existing_vacancies = session.query(Vacancy).filter_by(search_query_id=query.id).all()
@@ -108,6 +109,14 @@ def fetch_vacancies(session, query):
             if missing_vacancy:
                 # Запрашиваем актуальный статус вакансии
                 vacancy_details = hh_api.get(f'vacancies/{missing_id}')
+                time.sleep(2)
+
+                # Обработка ответа с кодом 404
+                if vacancy_details.get('status_code') == 404:
+                    logging.error(f"Vacancy {missing_id} returned 404. Adding to missing status list.")
+                    missing_status_ids.append(missing_id)  # Добавляем в отдельный список
+                    continue  # Пропускаем дальнейшую обработку для этой вакансии
+
                 if vacancy_details.get('archived', False):
                     # Если статус архивный, обновляем статус в базе
                     update_vacancy_status_to_archived(missing_vacancy, session)
@@ -116,27 +125,30 @@ def fetch_vacancies(session, query):
                     skipped_vacancies_count += 1
 
     except Exception as e:
-        logging.error("Error fetching vacancies for query '%s': %s", query.query, str(e))
+        logging.error(f"Error fetching vacancies for query '{query.query}': {str(e)}")
         session.rollback()  # Rollback in case of error
 
     # Отчет о результатах
     total_vacancies = len(all_vacancies)
     logging.info("Отчет о результатах сбора вакансий:")
-    logging.info("Всего было получено: %d", total_vacancies)
-    logging.info("Добавлено новых вакансий: %d", new_vacancies_count)
-    logging.info("Пропущено по причине наличия: %d", skipped_vacancies_count)
-    logging.info("С ошибками: %d", error_count)
+    logging.info(f"Всего было получено: {total_vacancies}")
+    logging.info(f"Добавлено новых вакансий: {new_vacancies_count}")
+    logging.info(f"Пропущено по причине наличия: {skipped_vacancies_count}")
+    logging.info(f"С ошибками: {error_count}")
     if error_ids:
-        logging.info("ID вакансий с ошибками: %s", error_ids)
+        logging.info(f"ID вакансий с ошибками: {error_ids}")
 
         # Повторная попытка сохранения вакансий с ошибками
         retry_vacancies(session, query.id, error_ids)
 
-# Отправка уведомления по электронной почте, если есть новые вакансии
+    # Отчет о вакансиях с отсутствующим статусом
+    if missing_status_ids:
+        logging.info(f"ID вакансий по которым при проверке не получен актуальный статус: {missing_status_ids}")
+
+    # Отправка уведомления по электронной почте, если есть новые вакансии
     if new_vacancies:
         email_body = create_email_body(new_vacancies, session)  # Передаем сессию
         send_email("Новые вакансии", email_body, query.email)  # Используем email из SearchQuery
-
 
 
 # Функция для создания HTML-таблицы с новыми вакансиями
@@ -217,6 +229,9 @@ def retry_vacancies(session, query_id, error_ids):
 def update_vacancy_status_to_archived(vacancy, session):
     """Обновление статуса вакансии на 'Архивный'."""
     # Создаем запись в VacancyStatusHistory
+    if vacancy.updated_at.tzinfo is None:
+        vacancy.updated_at = moscow_tz.localize(vacancy.updated_at)
+
     vacancy_status_history = VacancyStatusHistory(
         vacancy_id=vacancy.id,
         prev_status="Активный",
@@ -267,9 +282,8 @@ def revive_vacancy(existing_vacancy, vacancy_data, session):
     """Возобновление архивной вакансии."""
     # Обновляем статус вакансии
     existing_vacancy.status = "Активный"
-    existing_vacancy.updated_at = datetime.now(moscow_tz)
-    existing_vacancy.published_date = parse_datetime(
-        vacancy_data['published_at']) if 'published_at' in vacancy_data else existing_vacancy.published_date
+    if existing_vacancy.updated_at.tzinfo is None:
+        existing_vacancy.updated_at = moscow_tz.localize(existing_vacancy.updated_at)
 
     # Обновляем запись в VacancyStatusHistory
     vacancy_status_history = VacancyStatusHistory(
@@ -291,6 +305,10 @@ def revive_vacancy(existing_vacancy, vacancy_data, session):
 
     # Обновляем ключевые навыки
     update_key_skills(existing_vacancy, vacancy_details, session)
+
+    existing_vacancy.updated_at = datetime.now(moscow_tz)
+    existing_vacancy.published_date = parse_datetime(
+        vacancy_data['published_at']) if 'published_at' in vacancy_data else existing_vacancy.published_date
 
     # Сохраняем изменения
     session.commit()
