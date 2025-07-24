@@ -8,7 +8,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import pytz
 from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
-from util import send_email
+from util import send_email, create_email_body
 from models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, ProfessionalRole, \
     EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_work_schedules, \
     Employer, Industry, employer_industries, SearchQuery, VacancyStatusHistory, KeySkillHistory, SalaryHistory
@@ -51,8 +51,8 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-        'date_from': '2025-07-18T15:00:00',
-        'date_to': '2025-07-18T20:00:00'
+        'date_from': '2025-07-21T20:00:00',
+        'date_to': '2025-07-22T20:00:00'
     }
     logging.info(f"Fetching vacancies with parameters: {params}")
     all_vacancies = []
@@ -71,7 +71,7 @@ def fetch_vacancies(session, query):
             if response.get('pages', 0) <= params['page'] + 1:
                 break
             params['page'] += 1
-            time.sleep(5)
+            time.sleep(10)
 
         logging.info(f"Vacancies fetched successfully for query '{query.query}'. Total vacancies: {len(all_vacancies)}")
 
@@ -91,16 +91,25 @@ def fetch_vacancies(session, query):
         # Проверяем, какие вакансии отсутствуют среди полученных
         missing_vacancy_ids = existing_vacancy_ids - fetched_vacancy_ids
 
-        for vacancy in all_vacancies:
+        # Находим новые вакансии
+        new_vacancy_ids = fetched_vacancy_ids - existing_vacancy_ids
+
+        # Обработка новых вакансий
+        for new_id in new_vacancy_ids:
+            # Находим вакансию в all_vacancies по ID
+            vacancy = next((v for v in all_vacancies if v['id'] == new_id), None)
+            if vacancy:
+                try:
+                    process_vacancy(vacancy, session, query)
+                    new_vacancies_count += 1
+                    new_vacancies.append(vacancy)  # Добавляем вакансию в список новых
+                except Exception as e:
+                    logging.error(f"Error processing vacancy {vacancy['id']}: {str(e)}")
+                    error_ids.append(vacancy['id'])
+                    error_count += 1
+            else:
+                logging.warning(f"Vacancy with ID {new_id} not found in all_vacancies.")
             time.sleep(2)
-            try:
-                process_vacancy(vacancy, session, query)
-                new_vacancies_count += 1
-                new_vacancies.append(vacancy)  # Добавляем вакансию в список новых
-            except Exception as e:
-                logging.error(f"Error processing vacancy {vacancy['id']}: {str(e)}")
-                error_ids.append(vacancy['id'])
-                error_count += 1
 
         # Обработка отсутствующих вакансий
         for missing_id in missing_vacancy_ids:
@@ -147,59 +156,9 @@ def fetch_vacancies(session, query):
 
     # Отправка уведомления по электронной почте, если есть новые вакансии
     if new_vacancies:
-        email_body = create_email_body(new_vacancies, session)  # Передаем сессию
-        send_email("Новые вакансии", email_body, query.email)  # Используем email из SearchQuery
-
-
-# Функция для создания HTML-таблицы с новыми вакансиями
-def create_email_body(new_vacancies, session):
-    html = """
-    <html>
-    <body>
-        <h2>Новые вакансии</h2>
-        <table border="1">
-            <tr>
-                <th>Название</th>
-                <th>Работодатель</th>
-                <th>Зарплата</th>
-                <th>Ссылка</th>
-            </tr>
-    """
-    for vacancy_data in new_vacancies:
-        # Получаем вакансию из базы данных по external_id
-        vacancy = session.query(Vacancy).filter_by(external_id=vacancy_data['id']).first()
-
-        if vacancy:
-            title = vacancy.title
-            employer = vacancy.employer.name if vacancy.employer else 'Неизвестен'
-
-            # Получаем информацию о зарплате из SalaryHistory
-            salary_history = vacancy.salary_history  # Получаем связанные записи SalaryHistory
-            if salary_history:
-                # Находим первую активную запись о зарплате
-                active_salary = next((sh for sh in salary_history if sh.is_active), None)
-                if active_salary:
-                    salary = f"{active_salary.salary_from} - {active_salary.salary_to} {active_salary.currency}"
-                else:
-                    salary = 'Не указана'
-            else:
-                salary = 'Не указана'
-
-            link = f"https://hh.ru/vacancy/{vacancy_data['id']}"
-            html += f"""
-                <tr>
-                    <td>{title}</td>
-                    <td>{employer}</td>
-                    <td>{salary}</td>
-                    <td><a href="{link}">Ссылка</a></td>
-                </tr>
-            """
-    html += """
-        </table>
-    </body>
-    </html>
-    """
-    return html
+        email_body = create_email_body(new_vacancies, session, query)  # Передаем сессию и запрос
+        send_email("Новые вакансии по запросу: " + query.query, email_body,
+                   query.email)  # Используем email из SearchQuery
 
 
 def retry_vacancies(session, query_id, error_ids):
