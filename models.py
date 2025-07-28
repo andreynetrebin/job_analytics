@@ -26,6 +26,12 @@ vacancy_work_schedules = Table(
     Column('work_schedule_id', Integer, ForeignKey('work_schedules.id'), primary_key=True)
 )
 
+search_query_vacancies = Table(
+    'search_query_vacancies', Base.metadata,
+    Column('search_query_id', Integer, ForeignKey('search_queries.id'), primary_key=True),
+    Column('vacancy_id', Integer, ForeignKey('vacancies.id'), primary_key=True)
+)
+
 
 class Industry(Base):
     __tablename__ = 'industries'

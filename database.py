@@ -18,7 +18,7 @@ DB_NAME = os.getenv('DB_NAME')
 DATABASE_URL = f'mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}'
 
 # Создаем движок и сессию
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, connect_args={'connect_timeout': 10})  # Установите время ожидания соединения)
 Session = sessionmaker(bind=engine)
 
 
