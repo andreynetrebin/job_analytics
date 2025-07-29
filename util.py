@@ -10,7 +10,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from dotenv import load_dotenv
-from models import Vacancy  # Замените your_package_name на имя вашего пакета
+from models import Vacancy
 
 # Загружаем переменные окружения из файла .env
 load_dotenv()
@@ -94,6 +94,11 @@ def create_email_body(new_vacancies, session, query):
                 <th>Кол-во оценок</th>
             </tr>
     """
+    new_vacancies = sorted(new_vacancies, key=lambda x: (
+        session.query(Vacancy).filter_by(external_id=x['id']).first().employer.reviews_count if session.query(
+            Vacancy).filter_by(external_id=x['id']).first() and session.query(Vacancy).filter_by(
+            external_id=x['id']).first().employer else 0
+    ), reverse=True)
     for vacancy_data in new_vacancies:
         # Получаем вакансию из базы данных по external_id
         vacancy = session.query(Vacancy).filter_by(external_id=vacancy_data['id']).first()
