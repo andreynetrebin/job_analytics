@@ -17,8 +17,8 @@ DB_NAME = os.getenv('DB_NAME')
 # Формируем строку подключения
 DATABASE_URL = f'mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}'
 
-# Создаем движок и сессию
-engine = create_engine(DATABASE_URL, connect_args={'connect_timeout': 10})  # Установите время ожидания соединения)
+# Настройка пула соединений
+engine = create_engine(DATABASE_URL, pool_size=10, max_overflow=20, pool_timeout=30, pool_recycle=1800)
 Session = sessionmaker(bind=engine)
 
 

@@ -13,6 +13,7 @@ from models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, ProfessionalR
     EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_work_schedules, \
     Employer, Industry, employer_industries, SearchQuery, VacancyStatusHistory, KeySkillHistory, SalaryHistory, \
     search_query_vacancies
+from database import Session  # Импортируем Session из database.py
 
 # Настройка логирования
 log_file_path = 'job_analytics.log'
@@ -26,18 +27,6 @@ os.chdir(current_dir)
 
 # Загрузка переменных окружения
 load_dotenv()
-
-# Настройка базы данных
-DB_USER = os.getenv('DB_USER')
-DB_PASSWORD = os.getenv('DB_PASSWORD')
-DB_HOST = os.getenv('DB_HOST')
-DB_NAME = os.getenv('DB_NAME')
-
-DATABASE_URL = f'mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}'
-
-# Настройка пула соединений
-engine = create_engine(DATABASE_URL, pool_size=10, max_overflow=20, pool_timeout=30, pool_recycle=1800)
-Session = sessionmaker(bind=engine)
 
 # Настройки API HH
 base_url = 'https://api.hh.ru'  # Базовый URL для API HH
@@ -158,8 +147,8 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-        'date_from': '2025-07-25T10:30:00',
-        'data_to': '2025-07-25T11:00:00',
+        'date_from': '2025-07-25T11:30:00',
+        'data_to': '2025-07-25T12:00:00',
 
     }
     logging.info(f"Fetching vacancies with parameters: {params}")

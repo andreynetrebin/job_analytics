@@ -9,6 +9,7 @@ from database import init_db, check_db_exists, Session  # Импортируем
 from models import SearchQuery  # Импортируем модель SearchQuery
 from datetime import datetime
 import pytz
+from api import api_bp  # Импортируем Blueprint
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -21,6 +22,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 ])
 
 app = Flask(__name__)
+# Регистрация Blueprint
+app.register_blueprint(api_bp, url_prefix='/api')  # Все маршруты API будут начинаться с /api
+
 app.secret_key = os.urandom(24)  # Секретный ключ для сессий
 
 # Настройка Flask-Login
