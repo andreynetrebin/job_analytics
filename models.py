@@ -127,10 +127,8 @@ class WorkSchedule(Base):
     id_external = Column(String(50), nullable=False, unique=True)
     name = Column(String(255), nullable=False)
 
-
 class Vacancy(Base):
     __tablename__ = 'vacancies'
-
     # Определение колонок
     id = Column(Integer, primary_key=True, autoincrement=True)
     external_id = Column(String(255), unique=True, nullable=False)
@@ -146,8 +144,6 @@ class Vacancy(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(moscow_tz), onupdate=lambda: datetime.now(moscow_tz))
     created_date = Column(DateTime)
     published_date = Column(DateTime)
-    search_query_id = Column(Integer, ForeignKey('search_queries.id'))  # Добавление внешнего ключа
-
     # Определение отношений
     employer = relationship("Employer")
     experience = relationship("ExperienceLevel")
@@ -156,11 +152,11 @@ class Vacancy(Base):
     working_hours = relationship("WorkingHours")
     work_schedules = relationship("WorkSchedule", secondary=vacancy_work_schedules, backref='vacancies')
     work_formats = relationship("WorkFormat", secondary=vacancy_work_formats, backref='vacancies')
-
     # Связь с KeySkillHistory
     key_skill_history = relationship("KeySkillHistory", back_populates="vacancy")  # Связь с историей ключевых навыков
     status_history = relationship("VacancyStatusHistory", back_populates="vacancy")
-    search_query = relationship("SearchQuery", back_populates="vacancies")  # Связь с таблицей поисковых запросов
+    search_queries = relationship("SearchQuery", secondary=search_query_vacancies,
+                                  back_populates="vacancies")  # Обновленная связь с таблицей поисковых запросов
     salary_history = relationship("SalaryHistory", back_populates="vacancy")  # Связь с таблицей истории зарплат
 
 
@@ -202,7 +198,6 @@ class VacancyStatusHistory(Base):
 
 class SearchQuery(Base):
     __tablename__ = 'search_queries'
-
     # Определение колонок
     id = Column(Integer, primary_key=True, autoincrement=True)
     query = Column(String(255), nullable=False)
@@ -211,9 +206,8 @@ class SearchQuery(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(moscow_tz), onupdate=lambda: datetime.now(moscow_tz))
     initiator = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False)
-
     # Определение отношений
-    vacancies = relationship("Vacancy", back_populates="search_query")
+    vacancies = relationship("Vacancy", secondary=search_query_vacancies, back_populates="search_queries")
 
 
 class KeySkillHistory(Base):

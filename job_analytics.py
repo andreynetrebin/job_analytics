@@ -11,7 +11,8 @@ from api_tool import RestApiTool  # Импортируйте вашу библи
 from util import send_email, create_email_body
 from models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, ProfessionalRole, \
     EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_work_schedules, \
-    Employer, Industry, employer_industries, SearchQuery, VacancyStatusHistory, KeySkillHistory, SalaryHistory
+    Employer, Industry, employer_industries, SearchQuery, VacancyStatusHistory, KeySkillHistory, SalaryHistory, \
+    search_query_vacancies
 
 # Настройка логирования
 log_file_path = 'job_analytics.log'
@@ -72,8 +73,9 @@ def fetch_vacancies_from_file(session, query):
 
     try:
         # Получаем все вакансии из базы данных для текущего поискового запроса
-        existing_vacancies = session.query(Vacancy).filter_by(search_query_id=query.id).all()
-        existing_vacancy_ids = {vacancy.external_id for vacancy in existing_vacancies}
+        existing_vacancy_ids = session.query(search_query_vacancies.c.vacancy_id).filter_by(
+            search_query_id=query.id).all()
+        existing_vacancy_ids = {vacancy_id for (vacancy_id,) in existing_vacancy_ids}  # Извлекаем только ID
 
         # Список внешних ID полученных вакансий
         fetched_vacancy_ids = {vacancy['id'] for vacancy in all_vacancies}
@@ -156,6 +158,9 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
+        'date_from': '2025-07-25T10:30:00',
+        'data_to': '2025-07-25T11:00:00',
+
     }
     logging.info(f"Fetching vacancies with parameters: {params}")
     all_vacancies = []
@@ -189,9 +194,9 @@ def fetch_vacancies(session, query):
             time.sleep(5)
 
             # Получаем все вакансии из базы данных для текущего поискового запроса
-            existing_vacancies = session.query(Vacancy).filter_by(search_query_id=query.id).all()
-            existing_vacancy_ids = {vacancy.external_id for vacancy in existing_vacancies}
-
+            existing_vacancy_ids = session.query(search_query_vacancies.c.vacancy_id).filter_by(
+                search_query_id=query.id).all()
+            existing_vacancy_ids = {vacancy_id for (vacancy_id,) in existing_vacancy_ids}  # Извлекаем только ID
             # Список внешних ID полученных вакансий
             fetched_vacancy_ids = {vacancy['id'] for vacancy in all_vacancies}
 
@@ -342,18 +347,22 @@ def update_vacancy_status_to_archived(vacancy, session):
 def process_vacancy(vacancy_data, session, query):
     """Обработка и сохранение вакансии в базу данных."""
     external_id = vacancy_data['id']
-    # search_query_id = query.id
 
     existing_vacancy = session.query(Vacancy).filter_by(external_id=external_id).first()
     if existing_vacancy:
-
-        # Проверяем статус вакансии
-        if existing_vacancy.status == "Архивный":
-            logging.info(f"Vacancy {external_id} is archived. Reviving it.")
-            revive_vacancy(existing_vacancy, vacancy_data, session)
+        # Если вакансия уже существует, проверяем, связана ли она с текущим поисковым запросом
+        # print(existing_vacancy.search_queries)
+        # for item in existing_vacancy.search_queries:
+        #     print(dir(item))
+        existing_search_query_ids = {sq.id for sq in existing_vacancy.search_queries}
+        if query.id not in existing_search_query_ids:
+            # Если вакансия существует, но под другим search_query_id, добавляем связь
+            session.execute(
+                search_query_vacancies.insert().values(search_query_id=query.id, vacancy_id=existing_vacancy.id))
+            logging.info(f"Vacancy {external_id} already exists. Added relation to search query {query.id}.")
         else:
-            logging.info(f"Vacancy {external_id} is already active. Skipping.")
-        return  # Вакансия уже существует и активна, пропускаем
+            logging.info(f"Vacancy {external_id} is already linked to search query {query.id}. Skipping.")
+        return  # Вакансия уже существует, пропускаем
 
     try:
         # Создаем новую вакансию
@@ -517,12 +526,6 @@ def update_key_skills(existing_vacancy, vacancy_details, session):
 def create_vacancy(vacancy_data, session, query):
     """Создание объекта вакансии."""
     try:
-
-        existing_vacancy = session.query(Vacancy).filter_by(external_id=vacancy_data['id']).first()
-        if existing_vacancy:
-            logging.info(f"Vacancy with external ID {vacancy_data['id']} already exists. Skipping creation.")
-            return  # Пропускаем создание, если вакансия уже существует
-
         # Получаем детальную информацию о вакансии для получения ключевых навыков и дат
         time.sleep(1)
         vacancy_details = hh_api.get(f'vacancies/{vacancy_data["id"]}')
@@ -609,11 +612,13 @@ def create_vacancy(vacancy_data, session, query):
             working_hours_id=working_hours.id,
             status='Активный' if not vacancy_data.get('archived', False) else 'Архивный',
             created_date=created_date,
-            published_date=published_date,
-            search_query_id=query.id
+            published_date=published_date
         )
         session.add(vacancy)
         session.commit()  # Сохраняем изменения, чтобы получить id вакансии
+
+        # Создаем запись в таблице search_query_vacancies
+        session.execute(search_query_vacancies.insert().values(search_query_id=query.id, vacancy_id=vacancy.id))
 
         # Теперь, когда у нас есть vacancy.id, мы можем получить ключевые навыки
         get_or_create_key_skills(session, vacancy_details['key_skills'], vacancy.id)
@@ -788,10 +793,8 @@ def main():
         active_queries = session.query(SearchQuery).filter_by(is_active=True).all()
         logging.info("Fetching vacancies with active search queries.")
         for query in active_queries:
-            fetch_vacancies_from_file(session, query)  # Сбор данных о вакансиях
-
-
-#            fetch_vacancies(session, query)  # Сбор данных о вакансиях
+            # fetch_vacancies_from_file(session, query)  # Сбор данных о вакансиях
+            fetch_vacancies(session, query)  # Сбор данных о вакансиях
 
 
 if __name__ == "__main__":
