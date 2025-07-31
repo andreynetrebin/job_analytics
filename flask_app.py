@@ -54,7 +54,7 @@ def load_user(user_id):
 
 @app.route('/')
 def index():
-    return 'Welcome to the HH API App! <a href="/login_hh">Login with HH</a>'
+    return render_template('index.html')
 
 
 @app.route('/login', methods=['GET', 'POST'])

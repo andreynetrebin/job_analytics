@@ -2,8 +2,6 @@ import json
 import os
 import logging
 import time
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy import create_engine
 from datetime import datetime
 from dotenv import load_dotenv
 import pytz
@@ -147,9 +145,8 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-        'date_from': '2025-07-25T11:30:00',
-        'data_to': '2025-07-25T12:00:00',
-
+       'date_from': '2025-07-25T11:30:00',
+       'data_to': '2025-07-25T12:00:00',
     }
     logging.info(f"Fetching vacancies with parameters: {params}")
     all_vacancies = []
@@ -183,9 +180,15 @@ def fetch_vacancies(session, query):
             time.sleep(5)
 
             # Получаем все вакансии из базы данных для текущего поискового запроса
-            existing_vacancy_ids = session.query(search_query_vacancies.c.vacancy_id).filter_by(
-                search_query_id=query.id).all()
-            existing_vacancy_ids = {vacancy_id for (vacancy_id,) in existing_vacancy_ids}  # Извлекаем только ID
+            existing_vacancy_ids = session.query(Vacancy.external_id).join(
+                search_query_vacancies
+            ).filter(
+                search_query_vacancies.c.search_query_id == query.id
+            ).all()
+
+            # Извлекаем только external_id
+            existing_vacancy_ids = {external_id for (external_id,) in existing_vacancy_ids}
+
             # Список внешних ID полученных вакансий
             fetched_vacancy_ids = {vacancy['id'] for vacancy in all_vacancies}
 
@@ -339,10 +342,6 @@ def process_vacancy(vacancy_data, session, query):
 
     existing_vacancy = session.query(Vacancy).filter_by(external_id=external_id).first()
     if existing_vacancy:
-        # Если вакансия уже существует, проверяем, связана ли она с текущим поисковым запросом
-        # print(existing_vacancy.search_queries)
-        # for item in existing_vacancy.search_queries:
-        #     print(dir(item))
         existing_search_query_ids = {sq.id for sq in existing_vacancy.search_queries}
         if query.id not in existing_search_query_ids:
             # Если вакансия существует, но под другим search_query_id, добавляем связь
@@ -352,7 +351,6 @@ def process_vacancy(vacancy_data, session, query):
         else:
             logging.info(f"Vacancy {external_id} is already linked to search query {query.id}. Skipping.")
         return  # Вакансия уже существует, пропускаем
-
     try:
         # Создаем новую вакансию
         create_vacancy(vacancy_data, session, query)

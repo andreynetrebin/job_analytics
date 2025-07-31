@@ -18,7 +18,13 @@ DB_NAME = os.getenv('DB_NAME')
 DATABASE_URL = f'mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME}'
 
 # Настройка пула соединений
-engine = create_engine(DATABASE_URL, pool_size=10, max_overflow=20, pool_timeout=30, pool_recycle=1800)
+engine = create_engine(
+    DATABASE_URL,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=300,
+    pool_pre_ping=True  # Добавлено для проверки соединения
+ )
 Session = sessionmaker(bind=engine)
 
 
