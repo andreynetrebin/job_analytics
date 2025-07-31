@@ -95,10 +95,11 @@ def create_email_body(new_vacancies, session, query):
             </tr>
     """
     new_vacancies = sorted(new_vacancies, key=lambda x: (
-        session.query(Vacancy).filter_by(external_id=x['id']).first().employer.reviews_count if session.query(
+        session.query(Vacancy).filter_by(external_id=x['id']).first().employer.open_vacancies if session.query(
             Vacancy).filter_by(external_id=x['id']).first() and session.query(Vacancy).filter_by(
             external_id=x['id']).first().employer else 0
     ), reverse=True)
+
     for vacancy_data in new_vacancies:
         # Получаем вакансию из базы данных по external_id
         vacancy = session.query(Vacancy).filter_by(external_id=vacancy_data['id']).first()
