@@ -10,6 +10,7 @@ from models import SearchQuery  # Импортируем модель SearchQuer
 from datetime import datetime
 import pytz
 from api import api_bp  # Импортируем Blueprint
+from util import send_email
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
@@ -84,6 +85,11 @@ def admin_dashboard():
     queries = session.query(SearchQuery).all()
     return render_template('admin_dashboard.html', queries=queries)
 
+    is_active = False,  # По умолчанию неактивна
+    created_at = datetime.now(pytz.timezone('Europe/Moscow')),
+    updated_at = datetime.now(pytz.timezone('Europe/Moscow')),
+    initiator = data['initiator'],
+    email = data['email']
 
 @app.route('/search_queries', methods=['POST'])
 def create_search_query():
@@ -101,6 +107,18 @@ def create_search_query():
     session.add(new_query)
     session.commit()
     logging.info("New search query created: %s", new_query.query)
+    # Отправка уведомления администратору
+    subject = "Новая заявка на поисковый запрос"
+    body = f"""
+        <p>Пользователь {new_query.initiator} создал новую заявку:</p>
+        <p><strong>Запрос:</strong> {new_query.query}</p>
+        <p><strong>Email инициатора:</strong> {new_query.email}</p>
+        """
+    try:
+        send_email(subject, body, os.getenv('ADMIN_EMAIL'))  # Отправка email администратору
+        logging.info("Notification email sent to admin.")
+    except Exception as e:
+        logging.error(f"Failed to send email: {str(e)}")
     return jsonify({"message": "Search query created successfully"}), 201
 
 
@@ -238,6 +256,7 @@ def get_vacancies():
 
     return jsonify(all_vacancies)
 
+
 @app.route('/vacancy/<int:vacancy_id>', methods=['GET'])
 def get_vacancy_by_id(vacancy_id):
     """Получение вакансии по ID"""
@@ -260,6 +279,11 @@ def get_employer_by_id(employer_id):
     except Exception as e:
         logging.error("Error fetching employer by ID: %s", str(e))
         return jsonify({"error": "Failed to fetch employer"}), 500
+
+
+@app.route('/dashboards')
+def dashboards():
+    return render_template('dashboards.html')
 
 
 if __name__ == '__main__':
