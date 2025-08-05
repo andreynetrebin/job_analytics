@@ -6,15 +6,15 @@ from datetime import datetime
 from dotenv import load_dotenv
 import pytz
 from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
-from util import send_email, create_email_body
-from models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, ProfessionalRole, \
+from utils.util import send_email, create_email_body
+from database.models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, ProfessionalRole, \
     EmploymentForm, WorkingHours, WorkSchedule, vacancy_work_formats, vacancy_work_schedules, \
     Employer, Industry, employer_industries, SearchQuery, VacancyStatusHistory, KeySkillHistory, SalaryHistory, \
     search_query_vacancies
-from database import Session  # Импортируем Session из database.py
+from database.database import Session  # Импортируем Session из database.py
 
 # Настройка логирования
-log_file_path = 'job_analytics.log'
+log_file_path = 'logs/job_analytics.log'
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler(log_file_path), logging.StreamHandler()])
 
@@ -145,8 +145,8 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-       'date_from': '2025-07-25T11:30:00',
-       'data_to': '2025-07-25T12:00:00',
+       'date_from': '2025-07-26T11:30:00',
+       'data_to': '2025-07-26T12:00:00',
     }
     logging.info(f"Fetching vacancies with parameters: {params}")
     all_vacancies = []
@@ -232,12 +232,16 @@ def fetch_vacancies(session, query):
                         continue  # Пропускаем дальнейшую обработку для этой вакансии
 
                     if vacancy_details.get('archived', False):
-                        # Если статус архивный, обновляем статус в базе
-                        update_vacancy_status_to_archived(missing_vacancy, session)
+                        # Получаем последнюю запись в истории статусов для данной вакансии с наибольшим id
+                        last_status_history = session.query(VacancyStatusHistory).filter_by(vacancy_id=missing_vacancy.id).order_by(VacancyStatusHistory.id.desc()).first()
+                        if last_status_history is None or last_status_history.type_changed != "Отправлена в архив":
+                            # Если статус архивный, обновляем статус в базе
+                            update_vacancy_status_to_archived(missing_vacancy, session)
+                        else:
+                            logging.info(f"Vacancy {missing_id} is already archive.")
                     else:
                         logging.info(f"Vacancy {missing_id} is still active.")
                         skipped_vacancies_count += 1
-
             break  # Выход из цикла, если все прошло успешно
 
         except Exception as e:

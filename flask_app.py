@@ -1,22 +1,22 @@
 import logging
-from flask import Flask, request, redirect, url_for, session, jsonify, render_template
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask import Flask, request, redirect, url_for, jsonify, render_template
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user
 import json
 from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
 import os
 from dotenv import load_dotenv
-from database import init_db, check_db_exists, Session  # Импортируем функцию проверки
-from models import SearchQuery  # Импортируем модель SearchQuery
+from database.database import init_db, check_db_exists, Session  # Импортируем функцию проверки
+from database.models import SearchQuery  # Импортируем модель SearchQuery
 from datetime import datetime
 import pytz
 from api import api_bp  # Импортируем Blueprint
-from util import send_email
+from utils.util import send_email
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
 
 # Настройка логирования
-log_file_path = 'app.log'
+log_file_path = 'logs/app.log'
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[
     logging.FileHandler(log_file_path),
     logging.StreamHandler()  # Для вывода в консоль
