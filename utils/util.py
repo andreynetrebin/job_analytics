@@ -10,7 +10,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from dotenv import load_dotenv
-from models import Vacancy
+from database.models import Vacancy
 
 # Загружаем переменные окружения из файла .env
 load_dotenv()
@@ -32,7 +32,8 @@ def send_email(subject, body, recipient_email):
             creds.refresh(Request())
         else:
             flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
+                'credentials.json',
+                SCOPES)
             creds = flow.run_local_server(port=0)
         # Сохраняем учетные данные для следующего запуска
         with open('token.json', 'w') as token:
