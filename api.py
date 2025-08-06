@@ -1,9 +1,11 @@
 from flask import Blueprint, jsonify
-from sqlalchemy import func, distinct
+from sqlalchemy import func, distinct, case
 from database.models import Vacancy, KeySkill, KeySkillHistory, WorkFormat, ExperienceLevel, ProfessionalRole, \
-    SalaryHistory, SearchQuery, vacancy_work_formats, search_query_vacancies, Industry, employer_industries, VacancyStatusHistory
+    SalaryHistory, SearchQuery, vacancy_work_formats, search_query_vacancies, Industry, employer_industries, \
+    VacancyStatusHistory, Employer
 from database.database import Session  # Импортируем Session из database.py
 import numpy as np
+from datetime import datetime
 
 api_bp = Blueprint('api', __name__)
 
@@ -88,11 +90,14 @@ def get_vacancies_by_professional_role(search_query_id):
     return jsonify([{'professional_role': professional_role, 'count': count} for professional_role, count in results])
 
 
-@api_bp.route('/vacancies/industries/<int:search_query_id>', methods=['GET'])
+@api_bp.route('/employers/industries/<int:search_query_id>', methods=['GET'])
 def get_industries(search_query_id):
     session = Session()
     results = session.query(
-        Industry.name,  # Используем поле name из модели Industry
+        func.concat(
+            func.substr(Industry.name, 1, 80),
+            func.if_(func.length(Industry.name) > 80, '...', '')
+        ).label('industry'),  # Обрезаем название индустрии до 80 символов и добавляем "..."
         func.count(Vacancy.id).label('count')
     ) \
         .select_from(Vacancy).join(Vacancy.search_queries) \
@@ -111,15 +116,16 @@ def get_industries(search_query_id):
 @api_bp.route('/vacancies/salaries/<int:search_query_id>', methods=['GET'])
 def get_average_salaries(search_query_id):
     session = Session()
-
     avg_salaries = session.query(
         SalaryHistory.currency,
         ExperienceLevel.name.label('experience_level'),
         func.round(func.avg(SalaryHistory.salary_from)).label('avg_salary'),
+        func.count(Vacancy.id).label('vacancy_count')  # Добавляем количество вакансий
     ).select_from(Vacancy).join(Vacancy.search_queries).join(SalaryHistory).join(ExperienceLevel).filter(
         SearchQuery.id == search_query_id,
         SalaryHistory.is_active == True,  # Учитываем только активные записи
-        Vacancy.status == "Активный"  # Добавляем условие для статуса вакансии
+        Vacancy.status == "Активный",  # Добавляем условие для статуса вакансии
+        ExperienceLevel.name.isnot(None)  # Фильтр для исключения NULL значений
     ).group_by(
         SalaryHistory.currency,
         ExperienceLevel.name
@@ -127,10 +133,15 @@ def get_average_salaries(search_query_id):
         SalaryHistory.currency,
         ExperienceLevel.name
     ).all()
-
     session.close()
-    return jsonify([{'currency': currency, 'avg_salary': avg_salary, 'experience_level': experience_level} for
-                    currency, avg_salary, experience_level in avg_salaries])
+
+    # Формируем ответ с добавлением количества вакансий
+    return jsonify([{
+        'currency': currency,
+        'experience_level': experience_level,
+        'avg_salary': avg_salary,
+        'vacancy_count': vacancy_count  # Добавляем количество вакансий в ответ
+    } for currency, experience_level, avg_salary, vacancy_count in avg_salaries])
 
 
 @api_bp.route('/vacancies/salary-experience-correlation/<int:search_query_id>', methods=['GET'])
@@ -174,21 +185,89 @@ def get_salary_experience_correlation(search_query_id):
     return jsonify({'correlation': correlation})
 
 
-@api_bp.route('/vacancies/status_trends/<int:search_query_id>', methods=['GET'])
-def get_vacancies_status_trends(search_query_id):
+@api_bp.route('/vacancies/status_trends_active/<int:search_query_id>', methods=['GET'])
+def get_vacancies_status_trends_active(search_query_id):
     session = Session()
-
     results = session.query(
         VacancyStatusHistory.cur_status,
         func.count(VacancyStatusHistory.id).label('count'),
-        func.date(VacancyStatusHistory.created_at_cur_status).label('date')
+        func.date(VacancyStatusHistory.created_at_cur_status).label('date')  # Группируем по дате
     ).join(Vacancy, Vacancy.id == VacancyStatusHistory.vacancy_id) \
         .join(search_query_vacancies, search_query_vacancies.c.vacancy_id == Vacancy.id) \
-        .filter(search_query_vacancies.c.search_query_id == search_query_id) \
+        .filter(
+        search_query_vacancies.c.search_query_id == search_query_id,
+        Vacancy.status == "Активный",  # Добавляем условие для статуса вакансии
+    ) \
         .group_by(VacancyStatusHistory.cur_status, func.date(VacancyStatusHistory.created_at_cur_status)) \
         .order_by(func.date(VacancyStatusHistory.created_at_cur_status)) \
         .all()
+    session.close()
+    # Формируем ответ в формате, удобном для Grafana
+    response = []
+    for status, count, date in results:
+        # Преобразуем date в datetime и затем в UNIX timestamp в миллисекундах
+        datetime_obj = datetime.combine(date, datetime.min.time())
+        response.append({
+            'time': int(datetime_obj.timestamp() * 1000),  # Преобразуем дату в UNIX timestamp в миллисекундах
+            'value': count
+        })
+    return jsonify(response)
+
+
+@api_bp.route('/vacancies/status_trends_archive/<int:search_query_id>', methods=['GET'])
+def get_vacancies_status_trends_archive(search_query_id):
+    session = Session()
+    results = session.query(
+        VacancyStatusHistory.cur_status,
+        func.count(VacancyStatusHistory.id).label('count'),
+        func.date(VacancyStatusHistory.created_at_cur_status).label('date')  # Группируем по дате
+    ).join(Vacancy, Vacancy.id == VacancyStatusHistory.vacancy_id) \
+        .join(search_query_vacancies, search_query_vacancies.c.vacancy_id == Vacancy.id) \
+        .filter(
+        search_query_vacancies.c.search_query_id == search_query_id,
+        Vacancy.status == "Архивный",  # Добавляем условие для статуса вакансии
+    ) \
+        .group_by(VacancyStatusHistory.cur_status, func.date(VacancyStatusHistory.created_at_cur_status)) \
+        .order_by(func.date(VacancyStatusHistory.created_at_cur_status)) \
+        .all()
+    session.close()
+    # Формируем ответ в формате, удобном для Grafana
+    response = []
+    for status, count, date in results:
+        # Преобразуем date в datetime и затем в UNIX timestamp в миллисекундах
+        datetime_obj = datetime.combine(date, datetime.min.time())
+        response.append({
+            'time': int(datetime_obj.timestamp() * 1000),  # Преобразуем дату в UNIX timestamp в миллисекундах
+            'value': count
+        })
+    return jsonify(response)
+
+
+@api_bp.route('/employers/accreditation/<int:search_query_id>', methods=['GET'])
+def get_employer_accreditation_count(search_query_id):
+    session = Session()
+
+    # Подсчет уникальных работодателей с IT-акредитацией и без нее
+    employer_counts = session.query(
+        func.count(func.distinct(case([(Employer.accredited_it_employer == True, Employer.id)]))).label(
+            'accredited_employers'),
+        func.count(func.distinct(case([(Employer.accredited_it_employer == False, Employer.id)]))).label(
+            'non_accredited_employers')
+    ).join(Vacancy).join(Vacancy.search_queries).filter(
+        SearchQuery.id == search_query_id,
+        Vacancy.status == "Активный"  # Учитываем только активные вакансии
+    ).all()
 
     session.close()
 
-    return jsonify([{'status': status, 'count': count, 'date': date} for status, count, date in results])
+    # Извлечение данных из результата запроса
+    accredited_employers = employer_counts[0].accredited_employers if employer_counts else 0
+    non_accredited_employers = employer_counts[0].non_accredited_employers if employer_counts else 0
+
+    # Формируем ответ в формате, удобном для Grafana
+    response = [
+        {'category': 'Акредитованные', 'count': accredited_employers},
+        {'category': 'Неакредитованные', 'count': non_accredited_employers}
+    ]
+
+    return jsonify(response)
