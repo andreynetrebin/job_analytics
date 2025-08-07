@@ -1,22 +1,23 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Dashboard</title>
+    <title>Админский дашборд</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
 </head>
 <body>
     <div class="container mt-5">
-        <h1>Admin Dashboard</h1>
-        <h2>Search Queries</h2>
+        <h1>Админский дашборд</h1>
+        <h2>Поисковые запросы</h2>
         <table class="table table-striped">
             <thead>
                 <tr>
                     <th>ID</th>
-                    <th>Query</th>
-                    <th>Is Active</th>
-                    <th>Actions</th>
+                    <th>Запрос</th>
+                    <th>Инициатор</th>
+                    <th>Активен</th>
+                    <th>Действия</th>
                 </tr>
             </thead>
             <tbody>
@@ -24,11 +25,12 @@
                 <tr>
                     <td>{{ query.id }}</td>
                     <td>{{ query.query }}</td>
-                    <td>{{ 'Yes' if query.is_active else 'No' }}</td>
+                    <td>{{ query.initiator }}</td>
+                    <td>{{ 'Да' if query.is_active else 'Нет' }}</td>
                     <td>
                         {% if not query.is_active %}
                         <form action="{{ url_for('approve_search_query', query_id=query.id) }}" method="POST" style="display:inline;">
-                            <button type="submit" class="btn btn-success btn-sm">Approve</button>
+                            <button type="submit" class="btn btn-success btn-sm">Одобрить</button>
                         </form>
                         {% endif %}
                     </td>
@@ -36,7 +38,8 @@
                 {% endfor %}
             </tbody>
         </table>
-        <a href="{{ url_for('logout') }}" class="btn btn-danger">Logout</a>
+        <a href="{{ url_for('logout') }}" class="btn btn-danger">Выйти</a>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Вернуться в главное меню</a>
     </div>
 </body>
 </html>
