@@ -15,19 +15,34 @@
             border-radius: 10px;
             background-color: white;
         }
-        iframe {
-            width: 100%;
-            height: 600px; /* Высота iframe */
-            border: none;
-        }
     </style>
 </head>
 <body>
-     <div class="container content">
-         <h1>Дашборды в Grafana</h1>
-         <p>Ссылки на опубликованные дашборды:</p>
-         <a href="https://andreynetrebin.grafana.net/public-dashboards/94cbb18b23e64a10b853797f7f79a8da" target="_blank">Data Engineer</a>
-     </div>
+    <div class="container content">
+        <h1>Дашборды в Grafana</h1>
+        <p>Ссылки на опубликованные дашборды:</p>
+
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>Название поискового запроса</th>
+                    <th>Вакансии</th>
+                    <th>Работодатели</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Data Engineer</td>
+                    <td><a href="https://andreynetrebin.grafana.net/public-dashboards/94cbb18b23e64a10b853797f7f79a8da" target="_blank">Ссылка на дашборд</a></td>
+                    <td><a href="https://andreynetrebin.grafana.net/public-dashboards/e32df1d22e684f08af40ebdfc24c3ec8" target="_blank">Ссылка на дашборд</a></td>
+                </tr>
+                <!-- Добавьте дополнительные строки по мере необходимости -->
+            </tbody>
+        </table>
+
+        <!-- Кнопка возврата на главную страницу -->
+        <a href="/" class="btn btn-primary">Вернуться на главную страницу</a>
+    </div>
 
     <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.9.2/dist/umd/popper.min.js"></script>
