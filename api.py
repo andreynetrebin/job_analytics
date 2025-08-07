@@ -47,9 +47,10 @@ def get_vacancies_by_work_format(search_query_id):
         .join(Vacancy, Vacancy.id == vacancy_work_formats.c.vacancy_id) \
         .join(search_query_vacancies, search_query_vacancies.c.vacancy_id == Vacancy.id) \
         .join(SearchQuery, SearchQuery.id == search_query_vacancies.c.search_query_id) \
-        .filter(SearchQuery.id == search_query_id) \
-        .group_by(WorkFormat.id) \
-        .all()
+        .filter(
+        SearchQuery.id == search_query_id,
+        Vacancy.status == "Активный"  # Добавляем условие для статуса вакансии
+    ).group_by(WorkFormat.id).all()
 
     session.close()
     return jsonify([{'work_format': work_format_name, 'count': count} for work_format_name, count in results])
@@ -271,3 +272,68 @@ def get_employer_accreditation_count(search_query_id):
     ]
 
     return jsonify(response)
+
+
+@api_bp.route('/employers/top-cities/<int:search_query_id>', methods=['GET'])
+def get_top_cities(search_query_id):
+    session = Session()
+
+    top_cities = session.query(
+        Employer.area.label('city'),
+        func.count(Vacancy.id).label('count')
+    ) \
+        .join(Vacancy, Vacancy.employer_id == Employer.id) \
+        .join(Vacancy.search_queries) \
+        .filter(
+        Vacancy.status == "Активный",  # Фильтр по статусу вакансии
+        SearchQuery.id == search_query_id  # Фильтр по ID поискового запроса
+    ) \
+        .group_by(Employer.area) \
+        .order_by(func.count(Vacancy.id).desc()) \
+        .limit(10) \
+        .all()
+
+    session.close()
+    return jsonify([{'city': city, 'count': count} for city, count in top_cities])
+
+
+@api_bp.route('/employers/count/<int:search_query_id>', methods=['GET'])
+def get_employer_count(search_query_id):
+    session = Session()
+
+    employer_count = session.query(func.count(distinct(Employer.id))).join(Vacancy) \
+        .join(Vacancy.search_queries) \
+        .filter(
+        SearchQuery.id == search_query_id,
+        Vacancy.status == "Активный"  # Фильтр по статусу вакансии
+    ).scalar()  # Используем scalar() для получения единственного значения
+
+    session.close()
+
+    return jsonify({'employer_count': employer_count})
+
+
+@api_bp.route('/vacancies/count/<int:search_query_id>', methods=['GET'])
+def get_vacancy_count(search_query_id):
+    session = Session()
+
+    # Подсчет активных вакансий
+    active_count = session.query(func.count(Vacancy.id)).join(Vacancy.search_queries) \
+        .filter(
+        SearchQuery.id == search_query_id,
+        Vacancy.status == "Активный"  # Фильтр по статусу вакансии
+    ).scalar()  # Используем scalar() для получения единственного значения
+
+    # Подсчет архивных вакансий
+    archived_count = session.query(func.count(Vacancy.id)).join(Vacancy.search_queries) \
+        .filter(
+        SearchQuery.id == search_query_id,
+        Vacancy.status == "Архивный"  # Фильтр по статусу вакансии
+    ).scalar()  # Используем scalar() для получения единственного значения
+
+    session.close()
+
+    return jsonify({
+        'active_vacancies': active_count,
+        'archived_vacancies': archived_count
+    })
