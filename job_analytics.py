@@ -145,8 +145,6 @@ def fetch_vacancies(session, query):
         'text': query.query,
         'per_page': 20,
         'page': 0,
-       'date_from': '2025-07-26T11:30:00',
-       'data_to': '2025-07-26T12:00:00',
     }
     logging.info(f"Fetching vacancies with parameters: {params}")
     all_vacancies = []
@@ -233,7 +231,8 @@ def fetch_vacancies(session, query):
 
                     if vacancy_details.get('archived', False):
                         # Получаем последнюю запись в истории статусов для данной вакансии с наибольшим id
-                        last_status_history = session.query(VacancyStatusHistory).filter_by(vacancy_id=missing_vacancy.id).order_by(VacancyStatusHistory.id.desc()).first()
+                        last_status_history = session.query(VacancyStatusHistory).filter_by(
+                            vacancy_id=missing_vacancy.id).order_by(VacancyStatusHistory.id.desc()).first()
                         if last_status_history is None or last_status_history.type_changed != "Отправлена в архив":
                             # Если статус архивный, обновляем статус в базе
                             update_vacancy_status_to_archived(missing_vacancy, session)
