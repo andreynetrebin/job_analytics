@@ -1,4 +1,5 @@
 # HH API Приложение
+<img width="596" height="436" alt="job_analitycs" src="https://github.com/user-attachments/assets/d75b53a5-db38-4365-8224-c6a25acf9940" />
 
 ## Содержание
 
