@@ -1,60 +1,91 @@
-# util.py
-
+# util.py (обновленная версия)
 import os
+import json
 import logging
 import base64
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from google.auth.exceptions import RefreshError
 from dotenv import load_dotenv
 from database.models import Vacancy
 
-# Загружаем переменные окружения из файла .env
 load_dotenv()
 
-# Если измените эти области, удалите файл token.json.
 SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+
+
+def load_credentials():
+    """Загружает credentials, объединяя token.json и credentials.json"""
+    try:
+        # Загружаем токен
+        with open('token.json', 'r') as f:
+            token_data = json.load(f)
+
+        # Загружаем credentials для client_id и client_secret
+        with open('credentials.json', 'r') as f:
+            creds_config = json.load(f)['installed']
+
+        return Credentials(
+            token=token_data.get('token'),
+            refresh_token=token_data.get('refresh_token'),
+            token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+            client_id=creds_config['client_id'],
+            client_secret=creds_config['client_secret'],
+            scopes=token_data.get('scopes', SCOPES)
+        )
+    except Exception as e:
+        logging.error(f"Error loading credentials: {e}")
+        return None
 
 
 def send_email(subject, body, recipient_email):
     """Отправка email через Gmail API."""
 
-    # Получаем учетные данные
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    # Если нет (действительных) учетных данных, запрашиваем их у пользователя.
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    creds = load_credentials()
+    if not creds:
+        logging.error("Failed to load credentials")
+        return False
+
+    # Обновляем токен если истек
+    if creds.expired:
+        try:
+            logging.info("Refreshing access token...")
             creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json',
-                SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Сохраняем учетные данные для следующего запуска
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
 
-    # Создание сообщения
-    msg = MIMEMultipart()
-    msg['From'] = os.getenv('EMAIL_HOST_USER')
-    msg['To'] = recipient_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'html'))
+            # Сохраняем обновленный токен
+            with open('token.json', 'r') as f:
+                token_data = json.load(f)
+            token_data['token'] = creds.token
 
-    # Отправка сообщения
+            with open('token.json', 'w') as f:
+                json.dump(token_data, f)
+
+            logging.info("Access token refreshed successfully")
+        except RefreshError as e:
+            logging.error(f"Failed to refresh token: {e}")
+            return False
+
+    # Отправка письма
     try:
-        logging.info("Connecting to Gmail API...")
         service = build('gmail', 'v1', credentials=creds)
+        msg = MIMEMultipart()
+        msg['From'] = os.getenv('EMAIL_HOST_USER')
+        msg['To'] = recipient_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
+
         message = {'raw': base64.urlsafe_b64encode(msg.as_bytes()).decode()}
         service.users().messages().send(userId='me', body=message).execute()
-        logging.info("Email sent successfully to %s", recipient_email)  # Логирование адреса получателя
+
+        logging.info(f"Email sent successfully to {recipient_email}")
+        return True
+
     except Exception as e:
         logging.error(f"Failed to send email: {str(e)}")
+        return False
 
 
 def create_email_body(new_vacancies, session, query):
