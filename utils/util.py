@@ -1,4 +1,4 @@
-# util.py (обновленная версия)
+# util.py
 import os
 import json
 import logging
@@ -18,24 +18,51 @@ SCOPES = ['https://www.googleapis.com/auth/gmail.send']
 
 
 def load_credentials():
-    """Загружает credentials, объединяя token.json и credentials.json"""
+    """Загружает credentials для отправки писем"""
     try:
-        # Загружаем токен
-        with open('token.json', 'r') as f:
-            token_data = json.load(f)
+        if not os.path.exists('token.json'):
+            logging.error("token.json not found")
+            return None
 
-        # Загружаем credentials для client_id и client_secret
-        with open('credentials.json', 'r') as f:
-            creds_config = json.load(f)['installed']
+        with open('token.json', 'r') as token_file:
+            token_data = json.load(token_file)
 
-        return Credentials(
+        creds = Credentials(
             token=token_data.get('token'),
             refresh_token=token_data.get('refresh_token'),
             token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
-            client_id=creds_config['client_id'],
-            client_secret=creds_config['client_secret'],
+            client_id=token_data.get('client_id'),
+            client_secret=token_data.get('client_secret'),
             scopes=token_data.get('scopes', SCOPES)
         )
+
+        # Обновляем токен если истек
+        if creds.expired and creds.refresh_token:
+            logging.info("Refreshing access token...")
+            try:
+                creds.refresh(Request())
+
+                # Сохраняем обновленный токен
+                new_token_data = {
+                    'token': creds.token,
+                    'refresh_token': creds.refresh_token,
+                    'token_uri': creds.token_uri,
+                    'client_id': creds.client_id,
+                    'client_secret': creds.client_secret,
+                    'scopes': creds.scopes
+                }
+
+                with open('token.json', 'w') as token_file:
+                    json.dump(new_token_data, token_file)
+
+                logging.info("Access token refreshed successfully")
+
+            except RefreshError as e:
+                logging.error(f"Failed to refresh token: {e}")
+                return None
+
+        return creds
+
     except Exception as e:
         logging.error(f"Error loading credentials: {e}")
         return None
@@ -49,36 +76,25 @@ def send_email(subject, body, recipient_email):
         logging.error("Failed to load credentials")
         return False
 
-    # Обновляем токен если истек
-    if creds.expired:
-        try:
-            logging.info("Refreshing access token...")
-            creds.refresh(Request())
-
-            # Сохраняем обновленный токен
-            with open('token.json', 'r') as f:
-                token_data = json.load(f)
-            token_data['token'] = creds.token
-
-            with open('token.json', 'w') as f:
-                json.dump(token_data, f)
-
-            logging.info("Access token refreshed successfully")
-        except RefreshError as e:
-            logging.error(f"Failed to refresh token: {e}")
-            return False
-
-    # Отправка письма
     try:
         service = build('gmail', 'v1', credentials=creds)
-        msg = MIMEMultipart()
-        msg['From'] = os.getenv('EMAIL_HOST_USER')
-        msg['To'] = recipient_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'html'))
 
-        message = {'raw': base64.urlsafe_b64encode(msg.as_bytes()).decode()}
-        service.users().messages().send(userId='me', body=message).execute()
+        # Создаем сообщение
+        message = MIMEMultipart()
+        message['to'] = recipient_email
+        message['from'] = os.getenv('EMAIL_HOST_USER')
+        message['subject'] = subject
+
+        # Добавляем тело письма
+        msg_body = MIMEText(body, 'html')
+        message.attach(msg_body)
+
+        # Кодируем и отправляем
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        service.users().messages().send(
+            userId='me',
+            body={'raw': raw_message}
+        ).execute()
 
         logging.info(f"Email sent successfully to {recipient_email}")
         return True
