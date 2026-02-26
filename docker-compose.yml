@@ -1,0 +1,38 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: job_analytics_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: job_analytics_root
+      MYSQL_DATABASE: job_analytics
+      MYSQL_USER: job_analytics_user
+      MYSQL_PASSWORD: job_analytics_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pjob_analytics_root"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  flask:
+    build:
+      context: .
+      dockerfile: Dockerfile.flask
+    container_name: job_analytics_flask
+    env_file:
+      - .env
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/app
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: flask run --host=0.0.0.0 --port=5000
+
+volumes:
+  mysql_data:

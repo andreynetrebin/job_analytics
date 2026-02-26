@@ -189,3 +189,7 @@ vacancies_data
 credentials.json
 token.json
 logs
+credentials/
+*.bak
+*.log
+temp/

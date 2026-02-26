@@ -5,6 +5,8 @@ import logging
 import base64
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -14,8 +16,8 @@ from database.models import Vacancy
 
 load_dotenv()
 
+# ИСПРАВЛЕНО: убраны пробелы в конце scope!
 SCOPES = ['https://www.googleapis.com/auth/gmail.send']
-
 
 def load_credentials():
     """Загружает credentials для отправки писем"""
@@ -27,13 +29,14 @@ def load_credentials():
         with open('token.json', 'r') as token_file:
             token_data = json.load(token_file)
 
+        # ИСПРАВЛЕНО: убраны пробелы в token_uri и scopes
         creds = Credentials(
             token=token_data.get('token'),
             refresh_token=token_data.get('refresh_token'),
-            token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+            token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token').strip(),  # ← strip()
             client_id=token_data.get('client_id'),
             client_secret=token_data.get('client_secret'),
-            scopes=token_data.get('scopes', SCOPES)
+            scopes=[s.strip() for s in token_data.get('scopes', SCOPES)]  # ← strip() для каждого scope
         )
 
         # Обновляем токен если истек
@@ -53,7 +56,7 @@ def load_credentials():
                 }
 
                 with open('token.json', 'w') as token_file:
-                    json.dump(new_token_data, token_file)
+                    json.dump(new_token_data, token_file, indent=2)
 
                 logging.info("Access token refreshed successfully")
 
@@ -68,9 +71,9 @@ def load_credentials():
         return None
 
 
-def send_email(subject, body, recipient_email):
-    """Отправка email через Gmail API."""
-
+def send_email(subject, body, recipient_email, attachment_path=None):
+    """Отправка email через Gmail API с поддержкой вложений."""
+    
     creds = load_credentials()
     if not creds:
         logging.error("Failed to load credentials")
@@ -89,6 +92,20 @@ def send_email(subject, body, recipient_email):
         msg_body = MIMEText(body, 'html')
         message.attach(msg_body)
 
+        # Добавляем вложение (если указано)
+        if attachment_path and os.path.exists(attachment_path):
+            with open(attachment_path, 'rb') as f:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            filename = os.path.basename(attachment_path)
+            part.add_header(
+                'Content-Disposition',
+                f'attachment; filename="{filename}"'
+            )
+            message.attach(part)
+            logging.info(f"📎 Прикреплён файл: {filename}")
+
         # Кодируем и отправляем
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         service.users().messages().send(
@@ -96,11 +113,15 @@ def send_email(subject, body, recipient_email):
             body={'raw': raw_message}
         ).execute()
 
-        logging.info(f"Email sent successfully to {recipient_email}")
+        logging.info(f"📧 Email sent successfully to {recipient_email}")
+        if attachment_path:
+            logging.info(f"📎 Вложение: {os.path.basename(attachment_path)}")
         return True
 
     except Exception as e:
-        logging.error(f"Failed to send email: {str(e)}")
+        logging.error(f"❌ Failed to send email: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
