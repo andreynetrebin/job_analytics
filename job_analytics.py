@@ -2,7 +2,8 @@ import json
 import os
 import logging
 import time
-from datetime import datetime
+import glob
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import pytz
 from api_tool import RestApiTool  # Импортируйте вашу библиотеку api-tool
@@ -32,6 +33,14 @@ hh_api = RestApiTool(base_url)
 
 moscow_tz = pytz.timezone('Europe/Moscow')
 
+
+def cleanup_old_files(days=7):
+    """Удаляем JSON-файлы старше N дней"""
+    cutoff = datetime.now() - timedelta(days=days)
+    for filepath in glob.glob('vacancies_data/vacancies_query_*.json'):
+        if datetime.fromtimestamp(os.path.getmtime(filepath)) < cutoff:
+            os.remove(filepath)
+            logging.info(f"🗑️ Удалён старый файл: {filepath}")
 
 def parse_datetime(date_str):
     """Преобразуем строку даты в формат, который понимает MySQL."""
@@ -274,20 +283,37 @@ def fetch_vacancies(session, query):
                    query.email)  # Используем email из SearchQuery
 
     # Формирование отчета для админского ящика
+    date_str = datetime.now().strftime('%Y-%m-%d')
     admin_email_body = (
-        f"Отчет о собранных вакансиях по запросу: {query.query}\n"
+        f"📅 Дата сбора: {date_str}\n"
+        f"🔍 Поисковый запрос: {query.query}\n"
+        f"👤 Инициатор: {query.initiator} ({query.email})\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Всего вакансий: {total_vacancies}\n"
         f"Новых вакансий: {new_vacancies_count}\n"
-        f"Пропущено по причине наличия: {skipped_vacancies_count}\n"
+        f"Пропущено (уже есть): {skipped_vacancies_count}\n"
         f"С ошибками: {error_count}\n"
     )
     if error_ids:
-        admin_email_body += f"ID вакансий с ошибками: {', '.join(map(str, error_ids))}\n"
+        admin_email_body += f"⚠️ ID с ошибками: {', '.join(map(str, error_ids))}\n"
     if missing_status_ids:
-        admin_email_body += f"ID вакансий с отсутствующим статусом: {', '.join(map(str, missing_status_ids))}\n"
+        admin_email_body += f"❓ Отсутствующие статусы: {', '.join(map(str, missing_status_ids))}\n"
+    admin_email_body += f"\n📎 Вложение: {os.path.basename(filename)}"
+
     # Отправка отчета на админский ящик
-    admin_email = os.getenv('ADMIN_EMAIL')  # Замените на реальный адрес админа
-    send_email("Отчет о собранных вакансиях", admin_email_body, admin_email)
+    admin_email = os.getenv('ADMIN_EMAIL')
+    
+    subject = f"📊 Отчёт HH: {query.query} ({date_str})"
+    if admin_email:
+        send_email(
+            subject=subject,
+            body=admin_email_body,
+            recipient_email=admin_email,
+            attachment_path=filename  # ← Прикрепляем JSON-файл
+        )
+        logging.info(f"✅ Отправлен отчёт админу с вложением: {filename}")
+    else:
+        logging.warning("⚠️ ADMIN_EMAIL не указан в .env — отчёт админу не отправлен")
 
 
 def retry_vacancies(session, query_id, error_ids):
@@ -779,6 +805,7 @@ def save_relations(session, vacancy_id, work_format_ids, work_schedule_ids):
 
 
 def main():
+    cleanup_old_files(days=7)  # Оставляем файлы за последние 7 дней
     with Session() as session:
         active_queries = session.query(SearchQuery).filter_by(is_active=True).all()
         logging.info("Fetching vacancies with active search queries.")
