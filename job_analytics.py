@@ -14,6 +14,11 @@ from database.models import Vacancy, ExperienceLevel, WorkFormat, KeySkill, Prof
     search_query_vacancies
 from database.database import Session  # Импортируем Session из database.py
 
+import requests
+
+# Глобально меняем User-Agent для всех запросов через requests
+requests.utils.default_user_agent = lambda: 'MovieWatcher-Analytics/1.0 (andrew89s@mail.ru)'
+
 # Настройка логирования
 log_file_path = 'logs/job_analytics.log'
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
