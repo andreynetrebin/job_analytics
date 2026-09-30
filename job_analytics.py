@@ -47,10 +47,22 @@ def cleanup_old_files(days=7):
             os.remove(filepath)
             logging.info(f"🗑️ Удалён старый файл: {filepath}")
 
-def parse_datetime(date_str):
+def parse_datetime_mysql(date_str):
     """Преобразуем строку даты в формат, который понимает MySQL."""
     dt = datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%S%z')
     return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+def parse_datetime(date_str):
+    """Преобразуем строку даты в объект datetime для SQLAlchemy."""
+    if not date_str:
+        return None
+    try:
+        dt = datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%S%z')
+        # ✅ ВОЗВРАЩАЕМ ОБЪЕКТ DATETIME, а не строку!
+        # Убираем tzinfo, так как SQLite лучше работает с naive datetime
+        return dt.replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
 
 
 def fetch_vacancies_from_file(session, query):
@@ -168,6 +180,7 @@ def fetch_vacancies(session, query):
     skipped_vacancies_count = 0
     error_count = 0
     new_vacancies = []  # Список для хранения новых вакансий
+    filename = None     # ✅ ДОБАВИТЬ ЭТУ СТРОКУ
 
     max_retries = 5  # Максимальное количество попыток
     for attempt in range(max_retries):
@@ -303,7 +316,10 @@ def fetch_vacancies(session, query):
         admin_email_body += f"⚠️ ID с ошибками: {', '.join(map(str, error_ids))}\n"
     if missing_status_ids:
         admin_email_body += f"❓ Отсутствующие статусы: {', '.join(map(str, missing_status_ids))}\n"
-    admin_email_body += f"\n📎 Вложение: {os.path.basename(filename)}"
+    if filename:
+        admin_email_body += f"\n📎 Вложение: {os.path.basename(filename)}"
+    else:
+        admin_email_body += "\n📎 Вложение: Отсутствует (ошибка при запросе)"
 
     # Отправка отчета на админский ящик
     admin_email = os.getenv('ADMIN_EMAIL')
@@ -376,20 +392,26 @@ def process_vacancy(vacancy_data, session, query):
 
     existing_vacancy = session.query(Vacancy).filter_by(external_id=external_id).first()
     if existing_vacancy:
-        existing_search_query_ids = {sq.id for sq in existing_vacancy.search_queries}
-        if query.id not in existing_search_query_ids:
-            # Если вакансия существует, но под другим search_query_id, добавляем связь
-            session.execute(
-                search_query_vacancies.insert().values(search_query_id=query.id, vacancy_id=existing_vacancy.id))
-            logging.info(f"Vacancy {external_id} already exists. Added relation to search query {query.id}.")
-        else:
-            logging.info(f"Vacancy {external_id} is already linked to search query {query.id}. Skipping.")
-        return  # Вакансия уже существует, пропускаем
+        # ✅ 1. ДОБАВЛЕНО: Логика возрождения вакансии из архива, если она снова активна
+        if existing_vacancy.status == "Архивный" and not vacancy_data.get('archived', False):
+            revive_vacancy(existing_vacancy, vacancy_data, session)
+
+        # ✅ 2. ДОБАВЛЕНО: Безопасная проверка на None, чтобы избежать AttributeError
+        if query is not None:
+            existing_search_query_ids = {sq.id for sq in existing_vacancy.search_queries}
+            if query.id not in existing_search_query_ids:
+                session.execute(
+                    search_query_vacancies.insert().values(search_query_id=query.id, vacancy_id=existing_vacancy.id))
+                logging.info(f"Vacancy {external_id} already exists. Added relation to search query {query.id}.")
+            else:
+                logging.info(f"Vacancy {external_id} is already linked to search query {query.id}. Skipping.")
+        return  # Вакансия уже существует, пропускаем создание новой
+
     try:
-        # Создаем новую вакансию
         create_vacancy(vacancy_data, session, query)
     except Exception as e:
         logging.error(f"Error processing vacancy {external_id}: {str(e)}")
+
 
 
 def revive_vacancy(existing_vacancy, vacancy_data, session):

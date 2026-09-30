@@ -193,3 +193,4 @@ credentials/
 *.bak
 *.log
 temp/
+scripts/

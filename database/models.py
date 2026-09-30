@@ -1,5 +1,5 @@
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, DECIMAL, DateTime, Table, Boolean, Float
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, ForeignKey, DECIMAL, DateTime, Table, Boolean, Float
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import pytz
@@ -43,7 +43,7 @@ class Industry(Base):
 
     # Определение отношений
     employers = relationship("Employer", secondary=employer_industries, backref='industries_linked',
-                             overlaps="industries_linked")
+                             overlaps="employers,industries")
 
 
 class Employer(Base):
@@ -63,7 +63,7 @@ class Employer(Base):
 
     # Определение отношений
     industries = relationship("Industry", secondary=employer_industries, backref='employers_linked',
-                              overlaps="employers")
+                              overlaps="employers,industries")
 
 
 class ProfessionalRole(Base):
