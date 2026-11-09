@@ -11,6 +11,8 @@ import time
 import logging
 import requests
 from dotenv import load_dotenv
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 load_dotenv()
 
@@ -53,7 +55,7 @@ class HHAuthManager:
         }
 
         logger.info("Запрашиваю application-токен (client_credentials)...")
-        resp = requests.post(TOKEN_URL, data=payload, timeout=15)
+        resp = requests.post(TOKEN_URL, data=payload, timeout=15, verify=False)
 
         if resp.status_code != 200:
             logger.error(f"Ошибка получения токена: {resp.status_code} - {resp.text}")
