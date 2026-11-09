@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import requests
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -118,3 +119,24 @@ class HHClient:
             total_fetched=len(all_vacancies),
             raw_vacancies=all_vacancies
         )
+
+
+    def get_vacancy_details(self, vacancy_id: str) -> Dict[str, Any]:
+        """Получает полные детали одной вакансии по ID."""
+        try:
+            response = self.session.get(f"{self.base_url}/vacancies/{vacancy_id}", timeout=15)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ошибка получения деталей вакансии {vacancy_id}: {e}")
+            return {}
+
+    def get_employer_details(self, employer_id: str) -> Dict[str, Any]:
+        """Получает полные детали работодателя (включая отрасли)."""
+        try:
+            response = self.session.get(f"{self.base_url}/employers/{employer_id}", timeout=15)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ошибка получения деталей работодателя {employer_id}: {e}")
+            return {}
