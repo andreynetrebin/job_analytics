@@ -1,9 +1,12 @@
 import logging
 import time
+import urllib3
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import requests
 
+# Отключаем предупреждения о небезопасном SSL (для корпоративных прокси)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +23,9 @@ class FetchResult:
 
 
 class HHClient:
-    """Клиент для получения сырых данных из API HeadHunter."""
+    """Клиент для получения данных из API HeadHunter."""
 
-    def __init__(self, base_url: str = "https://api.hh.ru", user_agent: str = "JobAnalytics/1.0 (andrew89s@mail.ru)"):
+    def __init__(self, base_url: str = "https://api.hh.ru", user_agent: str = "JobAnalytics/1.0 (dev@example.com)"):
         self.base_url = base_url
         self.session = requests.Session()
         self.session.headers.update({
@@ -30,7 +33,6 @@ class HHClient:
             "Accept": "application/json",
             "Content-Type": "application/json"
         })
-        # Токен будет обновляться динамически, если нужно
         self._token: Optional[str] = None
 
     def set_token(self, token: str):
@@ -41,15 +43,8 @@ class HHClient:
         elif "Authorization" in self.session.headers:
             del self.session.headers["Authorization"]
 
-    def fetch_raw_vacancies(self, query: str, per_page: int = 20, max_pages: int = 20) -> FetchResult:
-        """
-        Собирает сырые данные вакансий по поисковому запросу с учетом пагинации.
-
-        :param query: Поисковый запрос (например, "Data Engineer")
-        :param per_page: Количество элементов на странице (макс. 100 для HH API)
-        :param max_pages: Максимальное количество страниц для сбора (защита от бесконечного цикла)
-        :return: Объект FetchResult с сырыми JSON-данными
-        """
+    def fetch_raw_vacancies(self, query: str, per_page: int = 50, max_pages: int = 20) -> FetchResult:
+        """Собирает сырые данные вакансий по поисковому запросу с учетом пагинации."""
         logger.info(f"Начинаем сбор сырых данных для запроса: '{query}'")
 
         all_vacancies = []
@@ -64,20 +59,14 @@ class HHClient:
             }
 
             try:
-                response = self.session.get(f"{self.base_url}/vacancies", params=params, timeout=15)
+                # verify=False добавлен для обхода корпоративных SSL-прокси
+                response = self.session.get(f"{self.base_url}/vacancies", params=params, timeout=15, verify=False)
 
-                # Обработка 403 Forbidden (неверный User-Agent или блокировка)
-                if response.status_code == 403:
-                    error_msg = f"403 Forbidden: Проверьте User-Agent или токены. Ответ: {response.text[:200]}"
+                if response.status_code in (400, 403):
+                    error_msg = f"{response.status_code} Error: Проверьте User-Agent (email должен совпадать с dev.hh.ru) или токен. Детали от HH: {response.text}"
                     logger.error(error_msg)
-                    return FetchResult(
-                        success=False,
-                        query=query,
-                        total_found=0,
-                        total_fetched=0,
-                        raw_vacancies=[],
-                        error_message=error_msg
-                    )
+                    return FetchResult(success=False, query=query, total_found=0, total_fetched=0, raw_vacancies=[],
+                                       error_message=error_msg)
 
                 response.raise_for_status()
                 data = response.json()
@@ -89,42 +78,28 @@ class HHClient:
                     total_found = data.get("found", 0)
                     logger.info(f"Всего найдено вакансий: {total_found}")
 
-                # Проверяем, есть ли следующая страница
                 pages = data.get("pages", 1)
                 if current_page >= pages - 1:
                     break
 
                 current_page += 1
-
-                # Уважительная задержка, чтобы не получить бан по IP (HH рекомендует ~1-2 сек)
-                time.sleep(1.5)
+                time.sleep(1.0)  # Rate limiting
 
             except requests.exceptions.RequestException as e:
                 error_msg = f"Ошибка сети при запросе страницы {current_page}: {str(e)}"
                 logger.error(error_msg)
-                return FetchResult(
-                    success=False,
-                    query=query,
-                    total_found=total_found,
-                    total_fetched=len(all_vacancies),
-                    raw_vacancies=all_vacancies,
-                    error_message=error_msg
-                )
+                return FetchResult(success=False, query=query, total_found=total_found,
+                                   total_fetched=len(all_vacancies), raw_vacancies=all_vacancies,
+                                   error_message=error_msg)
 
         logger.info(f"Успешно собрано {len(all_vacancies)} вакансий из {total_found} найденных.")
-        return FetchResult(
-            success=True,
-            query=query,
-            total_found=total_found,
-            total_fetched=len(all_vacancies),
-            raw_vacancies=all_vacancies
-        )
-
+        return FetchResult(success=True, query=query, total_found=total_found, total_fetched=len(all_vacancies),
+                           raw_vacancies=all_vacancies)
 
     def get_vacancy_details(self, vacancy_id: str) -> Dict[str, Any]:
         """Получает полные детали одной вакансии по ID."""
         try:
-            response = self.session.get(f"{self.base_url}/vacancies/{vacancy_id}", timeout=15)
+            response = self.session.get(f"{self.base_url}/vacancies/{vacancy_id}", timeout=15, verify=False)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -134,7 +109,7 @@ class HHClient:
     def get_employer_details(self, employer_id: str) -> Dict[str, Any]:
         """Получает полные детали работодателя (включая отрасли)."""
         try:
-            response = self.session.get(f"{self.base_url}/employers/{employer_id}", timeout=15)
+            response = self.session.get(f"{self.base_url}/employers/{employer_id}", timeout=15, verify=False)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
