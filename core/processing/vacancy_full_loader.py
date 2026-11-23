@@ -3,6 +3,7 @@ import traceback
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from database.models import (
     Vacancy, Employer, Industry, KeySkill, ProfessionalRole,
@@ -24,14 +25,30 @@ def parse_hh_date(date_str: Optional[str]) -> Optional[datetime]:
 
 
 def get_or_create(session, model, **kwargs):
-    # Фильтруем None значения из kwargs, чтобы filter_by работал корректно
-    clean_kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    instance = session.query(model).filter_by(**clean_kwargs).first()
-    if instance: return instance
+    """Пуленепробиваемый get_or_create с защитой от гонки данных и IntegrityError."""
+    unique_field = 'id_external' if 'id_external' in kwargs else 'name'
+    unique_value = kwargs.get(unique_field)
+
+    if unique_value is None:
+        unique_field = list(kwargs.keys())[0]
+        unique_value = kwargs[unique_field]
+
+    instance = session.query(model).filter_by(**{unique_field: unique_value}).first()
+    if instance:
+        return instance
+
     instance = model(**kwargs)
     session.add(instance)
-    session.flush()
-    return instance
+    try:
+        session.flush()
+        return instance
+    except IntegrityError:
+        # Если возник дубликат (редкая гонка или рассинхрон сессии), откатываем и забираем существующий
+        session.rollback()
+        return session.query(model).filter_by(**{unique_field: unique_value}).first()
+    except OperationalError as e:
+        session.rollback()
+        raise e
 
 
 def link_employer_industries(session, employer, industries_data):
@@ -50,15 +67,12 @@ def link_employer_industries(session, employer, industries_data):
 def process_full_vacancy(session: Session, vacancy_json: Dict, employer_json: Optional[Dict],
                          search_query_id: Optional[int] = None):
     try:
-        if not isinstance(vacancy_json, dict):
-            logger.error(f"vacancy_json не является словарем: {type(vacancy_json)}")
-            return
+        if not isinstance(vacancy_json, dict): return
 
         ext_id = str(vacancy_json.get('id'))
-        if not ext_id or ext_id == 'None':
-            return
+        if not ext_id or ext_id == 'None': return
 
-        # 1. Работодатель (ультра-защита от None)
+        # 1. Работодатель
         emp_data = vacancy_json.get('employer')
         if not isinstance(emp_data, dict): emp_data = {}
         emp_id = emp_data.get('id')
@@ -79,7 +93,7 @@ def process_full_vacancy(session: Session, vacancy_json: Dict, employer_json: Op
             if isinstance(industries, list):
                 link_employer_industries(session, employer, industries)
 
-        # 2. Справочники (проверка типов перед доступом к ключам)
+        # 2. Справочники
         exp_data = vacancy_json.get('experience')
         experience = get_or_create(session, ExperienceLevel, id_external=str(exp_data.get('id')),
                                    name=exp_data.get('name')) if isinstance(exp_data, dict) and exp_data.get(
@@ -105,7 +119,6 @@ def process_full_vacancy(session: Session, vacancy_json: Dict, employer_json: Op
         # 3. Вакансия
         vacancy = session.query(Vacancy).filter_by(external_id=ext_id).first()
         is_archived = bool(vacancy_json.get('archived', False))
-
         area_data = vacancy_json.get('area')
         area_name = area_data.get('name') if isinstance(area_data, dict) else None
 
@@ -124,15 +137,14 @@ def process_full_vacancy(session: Session, vacancy_json: Dict, employer_json: Op
         }
 
         if vacancy:
-            for k, v in common_data.items():
-                setattr(vacancy, k, v)
+            for k, v in common_data.items(): setattr(vacancy, k, v)
         else:
             vacancy = Vacancy(external_id=ext_id, **common_data)
             session.add(vacancy)
             session.flush()
             session.add(VacancyStatusHistory(
                 vacancy_id=vacancy.id, prev_status="Отсутствует", cur_status=common_data['status'],
-                type_changed="Первичная загрузка", duration=0,
+                type_changed="Первичная", duration=0,
                 created_at_prev_status=common_data['created_date'], created_at_cur_status=common_data['published_date']
             ))
 
@@ -161,26 +173,22 @@ def process_full_vacancy(session: Session, vacancy_json: Dict, employer_json: Op
         if isinstance(sal, dict) and sal.get('from') is not None:
             active_sal = session.query(SalaryHistory).filter_by(vacancy_id=vacancy.id, is_active=True).first()
             curr_from, curr_to, curr_cur = sal.get('from'), sal.get('to'), sal.get('currency', 'RUR')
-
             mode_data = sal.get('mode')
             mode_id = mode_data.get('id') if isinstance(mode_data, dict) else None
             mode_name = mode_data.get('name') if isinstance(mode_data, dict) else None
 
             if not active_sal or active_sal.salary_from != curr_from or active_sal.currency != curr_cur:
                 if active_sal: active_sal.is_active = False
-                session.add(SalaryHistory(
-                    vacancy_id=vacancy.id, salary_from=curr_from, salary_to=curr_to, currency=curr_cur,
-                    mode_id=mode_id, mode_name=mode_name, is_active=True
-                ))
+                session.add(
+                    SalaryHistory(vacancy_id=vacancy.id, salary_from=curr_from, salary_to=curr_to, currency=curr_cur,
+                                  mode_id=mode_id, mode_name=mode_name, is_active=True))
 
         # 6. Навыки
         skills = vacancy_json.get('key_skills')
         if isinstance(skills, list):
             for skill_data in skills:
                 if not isinstance(skill_data, dict) or not skill_data.get('name'): continue
-                skill_name = skill_data.get('name')
-                skill = get_or_create(session, KeySkill, name=skill_name)
-
+                skill = get_or_create(session, KeySkill, name=skill_data.get('name'))
                 existing_hist = session.query(KeySkillHistory).filter_by(vacancy_id=vacancy.id, key_skill_id=skill.id,
                                                                          is_active=True).first()
                 if not existing_hist:
@@ -200,16 +208,15 @@ def process_full_vacancy(session: Session, vacancy_json: Dict, employer_json: Op
                     search_query_vacancies.insert().values(search_query_id=search_query_id, vacancy_id=vacancy.id))
 
     except Exception as e:
-        # Добавляем полный traceback для точной диагностики
-        logger.error(f"❌ Ошибка обработки вакансии {vacancy_json.get('id')}: {e}\n{traceback.format_exc()}")
-        session.rollback()
+        logger.error(f"❌ Ошибка обработки вакансии {vacancy_json.get('id')}: {e}")
+        session.rollback()  # Откат только текущей неудачной вакансии
 
 
 def upsert_full_batch(session: Session, enriched_data: List[Dict], search_query_id: Optional[int] = None):
     stats = {'inserted': 0, 'updated': 0, 'errors': 0}
-    for item in enriched_data:
+
+    for i, item in enumerate(enriched_data):
         try:
-            # Простой способ посчитать: если вакансии не было, она вставится, иначе обновится
             ext_id = str(item['vacancy'].get('id'))
             exists = session.query(Vacancy).filter_by(external_id=ext_id).first()
             if exists:
@@ -218,10 +225,22 @@ def upsert_full_batch(session: Session, enriched_data: List[Dict], search_query_
                 stats['inserted'] += 1
 
             process_full_vacancy(session, item['vacancy'], item.get('employer'), search_query_id)
+
+            # ✅ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Коммитим каждые 50 вакансий, чтобы избежать "Lost connection" и переполнения памяти
+            if (i + 1) % 50 == 0:
+                session.commit()
+                logger.info(f"   💾 Промежуточный коммит: обработано {i + 1} из {len(enriched_data)}")
+
         except Exception as e:
             stats['errors'] += 1
-            logger.error(f"❌ Критическая ошибка в пакете: {e}")
+            logger.error(f"❌ Ошибка в пакете: {e}")
             session.rollback()
 
-    session.commit()
+    # Финальный коммит остатка
+    try:
+        session.commit()
+    except Exception as e:
+        logger.error(f"❌ Ошибка финального коммита: {e}")
+        session.rollback()
+
     return stats
