@@ -42,11 +42,16 @@ def process_single_query(db_session, sq: SearchQuery, client: HHClient, limit: i
     for i, vid in enumerate(vacancy_ids):
         v_details = client.get_vacancy_details(vid)
         e_details = {}
-        if v_details and 'employer' in v_details:
-            e_details = client.get_employer_details(str(v_details['employer'].get('id')))
+
+        # ✅ БЕЗОПАСНАЯ ПРОВЕРКА: берем ID только если работодатель и ID существуют
+        employer_data = v_details.get('employer') if isinstance(v_details, dict) else {}
+        emp_id = employer_data.get('id') if isinstance(employer_data, dict) else None
+
+        if emp_id:
+            e_details = client.get_employer_details(str(emp_id))
 
         enriched_data.append({'vacancy': v_details, 'employer': e_details})
-        time.sleep(1.5)  # Rate limiting для HH API
+        time.sleep(1.5)  # Rate limiting
 
     if not enriched_data:
         logger.warning("   ⚠️ Нет данных для сохранения после обогащения.")
