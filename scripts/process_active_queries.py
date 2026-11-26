@@ -19,8 +19,10 @@ logger = logging.getLogger(__name__)
 
 
 def process_single_query(db_session, sq: SearchQuery, client: HHClient, limit: int = 0):
-    """Обрабатывает один поисковый запрос: сбор, обогащение, сохранение и LLM-аналитика."""
+    """Обрабатывает один поисковый запрос: сбор, обогащение, сохранение в БД и облако."""
     logger.info(f"▶️ Начало обработки запроса: '{sq.query}' (ID: {sq.id})")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_query_name = sq.query.replace(' ', '_')
 
     # 1. Ingestion (Быстрый сбор списка)
     logger.info(f"   📡 Сбор списка вакансий для '{sq.query}'...")
@@ -35,6 +37,18 @@ def process_single_query(db_session, sq: SearchQuery, client: HHClient, limit: i
         vacancy_ids = vacancy_ids[:limit]
         logger.info(f"   ⚠️ Режим LIMIT={limit}. Обработаем только первые {limit} вакансий.")
 
+    # ☁️ ЗАГРУЗКА 1: Исходный (сырой) JSON
+    from core.utils.yandex_storage import upload_json_to_yandex
+    raw_filename = f"raw_{safe_query_name}_{timestamp}.json"
+    raw_data_to_save = {
+        "query": sq.query,
+        "timestamp": timestamp,
+        "total_found": search_result.total_found,
+        "total_fetched": len(vacancy_ids),
+        "vacancies": search_result.raw_vacancies
+    }
+    upload_json_to_yandex(raw_filename, raw_data_to_save)
+
     # 2. Enrichment (Детализация)
     logger.info(f"   🔍 Обогащение {len(vacancy_ids)} вакансий деталями...")
     enriched_data = []
@@ -43,7 +57,7 @@ def process_single_query(db_session, sq: SearchQuery, client: HHClient, limit: i
         v_details = client.get_vacancy_details(vid)
         e_details = {}
 
-        # ✅ БЕЗОПАСНАЯ ПРОВЕРКА: берем ID только если работодатель и ID существуют
+        # Безопасная проверка ID работодателя
         employer_data = v_details.get('employer') if isinstance(v_details, dict) else {}
         emp_id = employer_data.get('id') if isinstance(employer_data, dict) else None
 
@@ -57,56 +71,61 @@ def process_single_query(db_session, sq: SearchQuery, client: HHClient, limit: i
         logger.warning("   ⚠️ Нет данных для сохранения после обогащения.")
         return
 
+    # ☁️ ЗАГРУЗКА 2: Обогащенный (детальный) JSON
+    enriched_filename = f"enriched_{safe_query_name}_{timestamp}.json"
+    enriched_data_to_save = {
+        "query": sq.query,
+        "timestamp": timestamp,
+        "count": len(enriched_data),
+        "data": enriched_data
+    }
+    upload_json_to_yandex(enriched_filename, enriched_data_to_save)
+
     # 3. Сохранение в БД с привязкой к SearchQuery
     logger.info(f"   💾 Сохранение {len(enriched_data)} обогащенных вакансий в БД...")
     try:
+        from core.processing.vacancy_full_loader import upsert_full_batch
         stats = upsert_full_batch(db_session, enriched_data, search_query_id=sq.id)
         logger.info(
             f"   ✅ Успешно: Добавлено {stats['inserted']}, Обновлено {stats['updated']}, Ошибок {stats['errors']}")
     except Exception as e:
         logger.error(f"   ❌ Ошибка при сохранении в БД: {e}")
         db_session.rollback()
-        return  # Прерываем обработку этого запроса, переходим к следующему
+        return
 
-    # 4. 🧠 LLM-Аналитика и отправка на почту (ОТ ВСЕХ доступных онлайн-провайдеров)
+    # 4. 🧠 LLM-Аналитика и отправка на почту
     logger.info("   🧠 Генерация аналитических отчетов через доступные LLM...")
     try:
+        from core.processing.sql_analytics import JobAnalyticsSQL
+        from core.llm.llm_analyzer import create_analyzer_from_env
+        from core.utils.mailer import send_email_report
+
         analytics = JobAnalyticsSQL(db_session)
         context = analytics.get_full_context_for_llm(sq.query)
 
         analyzer = create_analyzer_from_env()
         custom_prompt = os.getenv("LLM_CUSTOM_PROMPT", "")
 
-        # Определяем, какие онлайн-провайдеры настроены и готовы к работе
         active_providers = []
-        if analyzer.gigachat:
-            active_providers.append(("gigachat", "GigaChat"))
-        if analyzer.openrouter:
-            active_providers.append(("openrouter", "OpenRouter"))
+        if analyzer.gigachat: active_providers.append(("gigachat", "GigaChat"))
+        if analyzer.openrouter: active_providers.append(("openrouter", "OpenRouter"))
 
-        if not active_providers:
-            logger.warning("   ⚠️ Ни один онлайн LLM-провайдер не настроен в .env")
-        else:
-            from core.utils.mailer import send_email_report
+        for mode, provider_name in active_providers:
+            try:
+                logger.info(f"   🔄 Запрос к {provider_name}...")
+                insight = analyzer.generate_report(context, custom_prompt=custom_prompt, mode=mode)
 
-            for mode, provider_name in active_providers:
-                try:
-                    logger.info(f"   🔄 Запрос к {provider_name}...")
-                    insight = analyzer.generate_report(context, custom_prompt=custom_prompt, mode=mode)
+                print("\n" + "=" * 70)
+                print(f"🤖 LLM-ОТЧЕТ ({provider_name}) ДЛЯ ЗАПРОСА: '{sq.query}'")
+                print("=" * 70)
+                print(insight)
+                print("=" * 70 + "\n")
 
-                    # Вывод в консоль
-                    print("\n" + "=" * 70)
-                    print(f"🤖 LLM-ОТЧЕТ ({provider_name}) ДЛЯ ЗАПРОСА: '{sq.query}'")
-                    print("=" * 70)
-                    print(insight)
-                    print("=" * 70 + "\n")
+                email_subject_query = f"[{provider_name}] {sq.query}"
+                send_email_report(email_subject_query, insight)
 
-                    # 📧 ОТПРАВКА НА ПОЧТУ (с указанием провайдера в теме письма)
-                    email_subject_query = f"[{provider_name}] {sq.query}"
-                    send_email_report(email_subject_query, insight)
-
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Не удалось получить отчет от {provider_name}: {e}")
+            except Exception as e:
+                logger.warning(f"   ⚠️ Не удалось получить отчет от {provider_name}: {e}")
 
     except Exception as e:
         logger.warning(f"   ⚠️ Критическая ошибка на этапе LLM-аналитики: {e}")
